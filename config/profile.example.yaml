@@ -1,0 +1,40 @@
+profile:
+  name: AI systems research
+  interests:
+    - name: AI agents
+      keywords:
+        - agentic systems
+        - tool use
+        - planning
+      weight: 1.0
+    - name: Local language models
+      keywords:
+        - local LLM
+        - inference
+        - quantization
+      weight: 0.8
+  exclusions:
+    - medical imaging
+    - autonomous weapons
+
+sources:
+  arxiv:
+    enabled: true
+    categories:
+      - cs.AI
+      - cs.CL
+    max_results: 50
+    lookback_days: 7
+
+ranking:
+  minimum_score: 1.0
+  recency_weight: 0.5
+  recency_window_days: 30
+
+ollama:
+  base_url: http://localhost:11434
+  model: llama3.2
+  timeout_seconds: 120
+
+analysis:
+  max_papers_per_run: 10

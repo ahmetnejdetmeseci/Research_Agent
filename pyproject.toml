@@ -4,13 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "researchpilot"
-version = "0.1.0"
+version = "0.6.0"
 description = "A local-first personal AI research assistant"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "ResearchPilot contributors" }]
-dependencies = []
+dependencies = [
+  "httpx>=0.27,<1",
+  "pydantic>=2.10,<3",
+  "PyYAML>=6,<7",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -23,7 +27,9 @@ researchpilot = "researchpilot.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+researchpilot = ["persistence/migrations/*.sql"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
-

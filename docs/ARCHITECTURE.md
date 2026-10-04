@@ -59,12 +59,81 @@ Each integration owns transport details, authentication, rate limits, response
 parsing, and conversion to domain models. `httpx` clients and base URLs will be
 injectable so normal tests remain offline.
 
+`ArxivSource` implements the paper-discovery port. It builds category and GMT
+submission-date queries, retrieves sequential Atom pages through an injected
+`httpx.Client`, normalizes entries into `Paper`, and translates transport or
+response failures into `ArxivError`. It waits three seconds between paginated
+requests, following the legacy API rate limit, while an injected sleeper keeps
+tests instantaneous. The adapter contains no persistence or ranking logic.
+
+`DiscoverPapers` is the provider-independent application service connecting a
+paper source to a paper repository. It returns fetched, inserted, and duplicate
+counts; the same service can later accept another source without importing
+ArXiv-specific types.
+
+### Deterministic ranking
+
+`RankPapers` loads normalized papers through the repository port and delegates
+to `DeterministicPaperRanker`. Matching is case-insensitive and respects term
+boundaries independently within title and abstract. Each distinct configured
+keyword contributes its interest weight once, regardless of repeated mentions.
+
+A paper with at least one keyword match receives a recency bonus that decays
+linearly from `recency_weight` to zero across `recency_window_days`. A paper with
+no keyword match receives no recency bonus. The final score is keyword score plus
+recency bonus; `minimum_score` controls selection, while any matching exclusion
+is a hard gate even when the score is high.
+
+`RankedPaper` retains every keyword contribution, matched exclusion, score
+component, and decision. Rankings are currently derived on demand rather than
+persisted because they depend on the active profile and evaluation time. This
+avoids stale stored scores while the ranking contract is still evolving.
+
+### Abstract analysis
+
+`LLMProvider` is a provider-independent port accepting a system prompt, user
+prompt, and JSON schema, and returning raw generated text. `OllamaProvider`
+implements it with a non-streaming `/api/generate` request, the configured local
+model, the Pydantic response schema, and temperature zero. It translates HTTP,
+timeout, connectivity, and malformed-envelope failures into `LLMProviderError`.
+
+`AnalyzePapers` recomputes deterministic rankings, processes only selected
+papers, and skips papers that already have a successful analysis for the same
+provider/model pair. It validates raw output as `AbstractAnalysis`, containing a
+summary, one to five key contributions, profile relevance, and up to five
+limitations. The prompt treats paper content as data and asks the model not to
+invent details absent from the abstract.
+
+Analysis runs are bounded by `max_papers_per_run`. A provider outage fails the
+current attempt and stops the run rather than repeatedly contacting a down
+service; invalid structured output fails only that paper and allows the run to
+continue.
+
 ### Persistence
 
 SQLite will be accessed with the Python `sqlite3` module through repository
 implementations. Numbered SQL migrations will evolve the schema. Database
 uniqueness constraints and application checks will both protect against
 duplicate processing.
+
+`Database` owns connection lifetime, commit-on-success, rollback-on-error, and
+ordered migration application. Applied versions are recorded in
+`schema_migrations`. Paper identity is the unique pair `(source, external_id)`;
+authors and categories are serialized as JSON arrays at the SQLite boundary and
+restored as domain values by `SQLitePaperRepository`. `SQLiteRunRepository`
+records command executions as running, succeeded, or failed and permits each run
+to be finished only once.
+
+`SQLiteAnalysisRepository` stores every analysis attempt rather than replacing
+earlier diagnostics. Each attempt records provider, model, attempt number,
+state, raw output when available, validated structured output on success, error
+on failure, and timestamps. A partial unique index permits only one successful
+analysis for each paper/provider/model while failed or interrupted attempts can
+be retried as new rows.
+
+The database path uses the following precedence: the CLI `--database` option,
+`RESEARCHPILOT_DATABASE`, then `researchpilot.db`. Database commands do not
+require the research-profile configuration.
 
 ### Interfaces
 
@@ -77,14 +146,29 @@ business logic.
 User-editable settings and weighted interests will live in YAML and be validated
 with Pydantic. Environment variables are reserved for secrets and deployment
 overrides, including GitHub credentials and the Ollama endpoint. No secret or
-user-specific profile belongs in version control; the repository will provide
-an example profile when configuration is implemented.
+user-specific profile belongs in version control; the repository provides an
+example profile as the documented starting point.
+
+The configuration path uses the following precedence: the CLI `--config`
+option, `RESEARCHPILOT_CONFIG`, then `config/profile.yaml`. The checked-in
+`config/profile.example.yaml` documents the schema; `config/profile.yaml` is
+ignored so a user's profile is not committed accidentally.
+
+The `ranking` section controls `minimum_score`, `recency_weight`, and
+`recency_window_days`. Defaults preserve compatibility with profiles created
+before deterministic ranking was introduced.
+
+The `ollama` section controls local base URL, model, and request timeout;
+`RESEARCHPILOT_OLLAMA_URL` overrides the configured endpoint. The `analysis`
+section limits attempts per command run. Defaults preserve compatibility with
+older profiles.
 
 ## Planned data flow
 
 ```text
-source adapter -> domain discovery -> SQLite -> deterministic ranking
-       -> LLM analysis -> digest builder -> exporter
+ArXiv adapter -> DiscoverPapers -> Paper -> SQLite -> RankPapers
+       -> AnalyzePapers -> LLMProvider -> SQLite attempts
+       -> digest builder -> exporter
 ```
 
 Each step records enough status to be safely retried. Exported Markdown is
@@ -122,4 +206,3 @@ derived output; SQLite remains the local source of truth.
 - Ollama behind a provider-independent port.
 - OS-level scheduling rather than an in-process scheduler.
 - No agent framework; future agent concepts will be implemented explicitly.
-

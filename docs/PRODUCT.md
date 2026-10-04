@@ -50,9 +50,13 @@ When the planned core workflow is complete, ResearchPilot will:
 
 ## Current product state
 
-Only the foundation milestone exists. ResearchPilot currently provides package
-metadata and a help-only CLI. It does not yet discover, store, rank, analyze, or
-export anything.
+The foundation, configuration/domain, local-persistence, and ArXiv-discovery
+milestones exist. ResearchPilot can validate a YAML interest profile, discover
+recent papers in configured ArXiv categories, normalize and persist metadata
+without duplicates, rank stored papers with explainable deterministic rules, and
+analyze selected abstracts through a local Ollama model while retaining an
+auditable attempt history. It does not yet process full papers or export
+digests.
 
 ## Non-goals for the initial milestones
 
@@ -61,4 +65,3 @@ export anything.
 - An autonomous agent before deterministic workflows are proven.
 - LangChain or another agent framework.
 - Supporting every research source, LLM provider, or export destination.
-

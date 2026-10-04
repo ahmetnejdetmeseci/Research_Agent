@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <title>ArXiv Query Results</title>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <opensearch:itemsPerPage>1</opensearch:itemsPerPage>
+  <entry>
+    <id>https://arxiv.org/abs/2601.00001v2</id>
+    <updated>2026-01-03T12:00:00Z</updated>
+    <published>2026-01-02T12:00:00Z</published>
+    <title>
+      A Useful Agent Paper
+    </title>
+    <summary>
+      An abstract with
+      normalized whitespace.
+    </summary>
+    <author><name>Ada Lovelace</name></author>
+    <author><name>Alan Turing</name></author>
+    <category term="cs.AI" />
+    <category term="cs.CL" />
+    <link href="https://arxiv.org/abs/2601.00001v2" rel="alternate"
+          type="text/html" />
+    <link title="pdf" href="https://arxiv.org/pdf/2601.00001v2"
+          rel="related" type="application/pdf" />
+  </entry>
+</feed>
