@@ -1,17 +1,17 @@
 profile:
-  name: AI systems research
+  name: Physics Residual Dynamics and Reduced Order Whole-Body Planning for Obstacle Aware Human Robot Cloth CoTransportation
   interests:
     - name: AI agents
       keywords:
-        - agentic systems
-        - tool use
-        - planning
+        - physics-residual dynamics
+        - recurrent variational autoencoder cloth dynamics
+        - MPPI deformable object planning
       weight: 1.0
     - name: Local language models
       keywords:
-        - local LLM
-        - inference
-        - quantization
+        - contrast-maximization motion estimation
+        - microsecond-latency visual sensing
+        - ONNX inference on event streams
       weight: 0.8
   exclusions:
     - medical imaging
@@ -23,8 +23,16 @@ sources:
     categories:
       - cs.AI
       - cs.CL
-    max_results: 50
+    max_results: 5
     lookback_days: 7
+  github:
+    enabled: true
+    queries:
+      - deformable object manipulation
+      - event camera motion estimation
+    max_results: 25
+    lookback_days: 30
+    max_readme_characters: 30000
 
 ranking:
   minimum_score: 1.0
@@ -38,3 +46,34 @@ ollama:
 
 analysis:
   max_papers_per_run: 10
+  max_repositories_per_run: 10
+
+content:
+  papers:
+    enabled: false
+    max_download_bytes: 20000000
+    max_pages: 40
+    max_characters: 60000
+  repositories:
+    enabled: false
+    include_patterns:
+      - "*.py"
+      - "**/*.py"
+      - "*.rs"
+      - "**/*.rs"
+      - "*.ts"
+      - "**/*.ts"
+    exclude_patterns:
+      - "tests/**"
+      - "vendor/**"
+      - "node_modules/**"
+      - "dist/**"
+      - "build/**"
+    max_files: 6
+    max_file_bytes: 200000
+    max_total_characters: 60000
+
+digest:
+  output_directory: digests
+  max_papers: 10
+  max_repositories: 10

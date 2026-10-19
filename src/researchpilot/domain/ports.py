@@ -8,16 +8,34 @@ from typing import Any, Protocol
 
 from researchpilot.domain.models import (
     AbstractAnalysis,
+    AnalysisContentKind,
+    AnalysisContentTrace,
     Paper,
     PaperAnalysisRecord,
     PaperSource,
+    RepositoryAnalysis,
+    RepositoryAnalysisRecord,
+    RepositorySource,
+    RetrievedContent,
     RunRecord,
     RunStatus,
+    SoftwareRepository,
 )
 
 
 class LLMProviderError(Exception):
     """A provider-independent text-generation failure."""
+
+
+class ContentRetrievalError(Exception):
+    """A provider-independent content acquisition or extraction failure."""
+
+
+class DigestWriter(Protocol):
+    """Persist one generated digest without coupling construction to storage."""
+
+    def write(self, filename: str, content: str) -> str:
+        """Write content idempotently and return its display path."""
 
 
 class LLMProvider(Protocol):
@@ -55,6 +73,50 @@ class PaperDiscoverySource(Protocol):
         """Return papers matching source categories and submission dates."""
 
 
+class RepositoryDiscoverySource(Protocol):
+    """Discover normalized repositories without exposing provider transport types."""
+
+    def search(
+        self,
+        *,
+        queries: Sequence[str],
+        pushed_after: datetime,
+        max_results: int,
+        max_readme_characters: int,
+    ) -> list[SoftwareRepository]:
+        """Return repositories matching configured queries and activity date."""
+
+
+class PaperContentProvider(Protocol):
+    """Retrieve bounded full-paper text without exposing transport details."""
+
+    def retrieve(
+        self,
+        paper: Paper,
+        *,
+        max_download_bytes: int,
+        max_pages: int,
+        max_characters: int,
+    ) -> RetrievedContent:
+        """Return extracted full text and provenance for a paper."""
+
+
+class RepositoryContentProvider(Protocol):
+    """Retrieve bounded selected source files from a repository."""
+
+    def retrieve(
+        self,
+        repository: SoftwareRepository,
+        *,
+        include_patterns: Sequence[str],
+        exclude_patterns: Sequence[str],
+        max_files: int,
+        max_file_bytes: int,
+        max_total_characters: int,
+    ) -> RetrievedContent:
+        """Return selected source text and provenance for a repository."""
+
+
 class PaperRepository(Protocol):
     """Persistence operations needed by paper workflows."""
 
@@ -72,6 +134,29 @@ class PaperRepository(Protocol):
 
     def count(self) -> int:
         """Return the number of stored papers."""
+
+
+class RepositoryStore(Protocol):
+    """Persistence operations needed by repository workflows."""
+
+    def add(self, repository: SoftwareRepository) -> bool:
+        """Store a repository, returning whether a new row was inserted."""
+
+    def add_many(self, repositories: Iterable[SoftwareRepository]) -> int:
+        """Atomically store repositories and return the number inserted."""
+
+    def get(
+        self,
+        source: RepositorySource,
+        external_id: str,
+    ) -> SoftwareRepository | None:
+        """Find one repository by its stable source identity."""
+
+    def list_all(self) -> list[SoftwareRepository]:
+        """Return all repositories in deterministic order."""
+
+    def count(self) -> int:
+        """Return the number of stored repositories."""
 
 
 class RunRepository(Protocol):
@@ -103,6 +188,7 @@ class AnalysisRepository(Protocol):
         external_id: str,
         provider: str,
         model: str,
+        content_kind: AnalysisContentKind = AnalysisContentKind.ABSTRACT,
     ) -> PaperAnalysisRecord | None:
         """Return a successful matching analysis, if one exists."""
 
@@ -112,6 +198,7 @@ class AnalysisRepository(Protocol):
         provider: str,
         model: str,
         *,
+        content_trace: AnalysisContentTrace | None = None,
         started_at: datetime | None = None,
     ) -> PaperAnalysisRecord:
         """Create a new running attempt, preserving earlier attempts."""
@@ -142,3 +229,55 @@ class AnalysisRepository(Protocol):
         external_id: str,
     ) -> list[PaperAnalysisRecord]:
         """Return a paper's analysis history in attempt order."""
+
+
+class RepositoryAnalysisStore(Protocol):
+    """Persist auditable repository-analysis attempts."""
+
+    def get_success(
+        self,
+        source: RepositorySource,
+        external_id: str,
+        provider: str,
+        model: str,
+        content_kind: AnalysisContentKind = AnalysisContentKind.README,
+    ) -> RepositoryAnalysisRecord | None:
+        """Return a successful matching analysis, if one exists."""
+
+    def begin_attempt(
+        self,
+        repository: SoftwareRepository,
+        provider: str,
+        model: str,
+        *,
+        content_trace: AnalysisContentTrace | None = None,
+        started_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Create a new running attempt, preserving earlier attempts."""
+
+    def succeed(
+        self,
+        attempt_id: int,
+        result: RepositoryAnalysis,
+        raw_output: str,
+        *,
+        completed_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Complete a running attempt successfully."""
+
+    def fail(
+        self,
+        attempt_id: int,
+        error: str,
+        *,
+        raw_output: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Mark a running attempt failed while retaining diagnostics."""
+
+    def list_attempts(
+        self,
+        source: RepositorySource,
+        external_id: str,
+    ) -> list[RepositoryAnalysisRecord]:
+        """Return a repository's analysis history in attempt order."""

@@ -40,8 +40,10 @@ class DatabaseStatus:
     current_version: int
     latest_version: int
     paper_count: int
+    repository_count: int
     run_count: int
     analysis_attempt_count: int
+    repository_analysis_attempt_count: int
 
     @property
     def pending_migrations(self) -> int:
@@ -185,8 +187,10 @@ class Database:
                 current_version=0,
                 latest_version=latest_version,
                 paper_count=0,
+                repository_count=0,
                 run_count=0,
                 analysis_attempt_count=0,
+                repository_analysis_attempt_count=0,
             )
 
         try:
@@ -207,11 +211,21 @@ class Database:
                     current_version = int(row["version"])
 
                 paper_count = self._table_count(connection, tables, "papers")
+                repository_count = self._table_count(
+                    connection,
+                    tables,
+                    "repositories",
+                )
                 run_count = self._table_count(connection, tables, "runs")
                 analysis_attempt_count = self._table_count(
                     connection,
                     tables,
                     "paper_analysis_attempts",
+                )
+                repository_analysis_attempt_count = self._table_count(
+                    connection,
+                    tables,
+                    "repository_analysis_attempts",
                 )
                 initialized = (
                     current_version == latest_version
@@ -219,6 +233,8 @@ class Database:
                         "papers",
                         "runs",
                         "paper_analysis_attempts",
+                        "repositories",
+                        "repository_analysis_attempts",
                     }.issubset(tables)
                 )
         except sqlite3.Error as exc:
@@ -233,8 +249,10 @@ class Database:
             current_version=current_version,
             latest_version=latest_version,
             paper_count=paper_count,
+            repository_count=repository_count,
             run_count=run_count,
             analysis_attempt_count=analysis_attempt_count,
+            repository_analysis_attempt_count=repository_analysis_attempt_count,
         )
 
     @staticmethod

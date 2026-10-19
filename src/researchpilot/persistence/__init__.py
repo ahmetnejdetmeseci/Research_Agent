@@ -12,6 +12,8 @@ from researchpilot.persistence.database import (
 from researchpilot.persistence.repositories import (
     SQLiteAnalysisRepository,
     SQLitePaperRepository,
+    SQLiteRepositoryAnalysisStore,
+    SQLiteRepositoryStore,
     SQLiteRunRepository,
 )
 
@@ -24,6 +26,8 @@ __all__ = [
     "PersistenceError",
     "SQLiteAnalysisRepository",
     "SQLitePaperRepository",
+    "SQLiteRepositoryAnalysisStore",
+    "SQLiteRepositoryStore",
     "SQLiteRunRepository",
     "resolve_database_path",
 ]

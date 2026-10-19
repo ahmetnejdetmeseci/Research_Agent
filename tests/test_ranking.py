@@ -4,10 +4,19 @@ import pytest
 
 from researchpilot.application import (
     DeterministicPaperRanker,
+    DeterministicRepositoryRanker,
     RankPapers,
+    RankRepositories,
     RankingPolicy,
 )
-from researchpilot.domain import Interest, InterestProfile, Paper, PaperSource
+from researchpilot.domain import (
+    Interest,
+    InterestProfile,
+    Paper,
+    PaperSource,
+    RepositorySource,
+    SoftwareRepository,
+)
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 
@@ -203,3 +212,75 @@ def test_rank_papers_loads_papers_from_repository() -> None:
 def test_invalid_ranking_policy_is_rejected(policy) -> None:
     with pytest.raises(ValueError):
         policy()
+
+
+def make_repository(
+    external_id: str = "123",
+    *,
+    description: str = "Planning tools for AI agents",
+    readme: str | None = "A language model uses tool calling.",
+    age_days: float = 0,
+) -> SoftwareRepository:
+    return SoftwareRepository(
+        source=RepositorySource.GITHUB,
+        external_id=external_id,
+        full_name=f"example/repository-{external_id}",
+        owner="example",
+        name=f"repository-{external_id}",
+        description=description,
+        readme=readme,
+        url=f"https://github.com/example/repository-{external_id}",
+        default_branch="main",
+        primary_language="Python",
+        topics=["agents"],
+        stars=10,
+        created_at=NOW - timedelta(days=100),
+        updated_at=NOW - timedelta(days=age_days),
+        pushed_at=NOW - timedelta(days=age_days),
+    )
+
+
+def test_repository_ranking_matches_metadata_and_readme_once() -> None:
+    ranked = DeterministicRepositoryRanker().rank(
+        [make_repository()],
+        profile(),
+        RankingPolicy(),
+        now=NOW,
+    )[0]
+
+    assert [match.keyword for match in ranked.matches] == [
+        "AI agents",
+        "planning",
+        "language model",
+    ]
+    assert ranked.keyword_score == 4.5
+    assert ranked.recency_bonus == 0.5
+    assert ranked.selected is True
+
+
+def test_repository_exclusion_is_a_hard_gate() -> None:
+    ranked = DeterministicRepositoryRanker().rank(
+        [make_repository(readme="Planning for medical imaging")],
+        profile(exclusions=["medical imaging"]),
+        RankingPolicy(),
+        now=NOW,
+    )[0]
+
+    assert ranked.exclusions == ["medical imaging"]
+    assert ranked.selected is False
+
+
+def test_rank_repositories_loads_from_store() -> None:
+    repositories = [make_repository()]
+
+    class Store:
+        def list_all(self) -> list[SoftwareRepository]:
+            return repositories
+
+    ranked = RankRepositories(Store()).execute(
+        profile(),
+        RankingPolicy(),
+        now=NOW,
+    )
+
+    assert [item.repository for item in ranked] == repositories

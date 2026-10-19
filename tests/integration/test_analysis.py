@@ -1,14 +1,21 @@
 from datetime import datetime, timezone
 
-from researchpilot.application import AnalyzePapers, RankingPolicy
+from researchpilot.application import (
+    AnalyzePapers,
+    PaperContentPolicy,
+    RankingPolicy,
+)
 from researchpilot.domain import (
+    AnalysisContentKind,
     AnalysisStatus,
+    ContentReference,
     Interest,
     InterestProfile,
     Paper,
     PaperSource,
+    RetrievedContent,
 )
-from researchpilot.domain.ports import LLMProviderError
+from researchpilot.domain.ports import ContentRetrievalError, LLMProviderError
 from researchpilot.persistence import (
     Database,
     SQLiteAnalysisRepository,
@@ -49,6 +56,7 @@ def make_paper(external_id: str = "2601.00001") -> Paper:
         authors=["Ada Lovelace"],
         published_at=NOW,
         url=f"https://arxiv.org/abs/{external_id}",
+        pdf_url=f"https://arxiv.org/pdf/{external_id}",
     )
 
 
@@ -196,3 +204,100 @@ def test_run_limit_bounds_the_number_of_attempts(tmp_path) -> None:
     assert result.attempted == 1
     assert result.succeeded == 1
     assert len(provider.calls) == 1
+
+
+class FakePaperContentProvider:
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[dict] = []
+
+    def retrieve(self, paper, **limits) -> RetrievedContent:
+        self.calls.append({"paper": paper, **limits})
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def full_content_policy() -> PaperContentPolicy:
+    return PaperContentPolicy(
+        enabled=True,
+        max_download_bytes=1_000_000,
+        max_pages=20,
+        max_characters=50_000,
+    )
+
+
+def test_full_paper_analysis_is_distinct_from_existing_abstract(tmp_path) -> None:
+    item = make_paper()
+    _, papers, analyses = setup_repositories(tmp_path, [item])
+    abstract_provider = FakeProvider([VALID_OUTPUT])
+    service(papers, analyses, abstract_provider).execute(
+        profile(),
+        RankingPolicy(recency_weight=0),
+        max_papers=1,
+        now=NOW,
+    )
+    full_text = RetrievedContent(
+        text="Full paper content about planning.",
+        references=[
+            ContentReference(
+                label="ArXiv PDF",
+                locator=str(item.pdf_url),
+                characters=34,
+                pages=5,
+            )
+        ],
+    )
+    content_provider = FakePaperContentProvider(full_text)
+    llm = FakeProvider([VALID_OUTPUT])
+
+    result = AnalyzePapers(
+        papers,
+        analyses,
+        llm,
+        content_provider=content_provider,
+        clock=lambda: NOW,
+    ).execute(
+        profile(),
+        RankingPolicy(recency_weight=0),
+        max_papers=1,
+        now=NOW,
+        content_policy=full_content_policy(),
+    )
+
+    attempts = analyses.list_attempts(item.source, item.external_id)
+    assert result.full_content_used == 1
+    assert result.succeeded == 1
+    assert len(attempts) == 2
+    assert attempts[-1].content_trace.kind is AnalysisContentKind.FULL_PAPER
+    assert "Full paper content" in llm.calls[0]["prompt"]
+
+
+def test_full_paper_failure_falls_back_to_traceable_abstract(tmp_path) -> None:
+    item = make_paper()
+    _, papers, analyses = setup_repositories(tmp_path, [item])
+    content_provider = FakePaperContentProvider(
+        ContentRetrievalError("PDF has no extractable text")
+    )
+    llm = FakeProvider([VALID_OUTPUT])
+
+    result = AnalyzePapers(
+        papers,
+        analyses,
+        llm,
+        content_provider=content_provider,
+        clock=lambda: NOW,
+    ).execute(
+        profile(),
+        RankingPolicy(recency_weight=0),
+        max_papers=1,
+        now=NOW,
+        content_policy=full_content_policy(),
+    )
+
+    attempt = analyses.list_attempts(item.source, item.external_id)[0]
+    assert result.succeeded == 1
+    assert result.full_content_used == 0
+    assert result.fallbacks[0].reason == "PDF has no extractable text"
+    assert attempt.content_trace.kind is AnalysisContentKind.ABSTRACT
+    assert "fallback to abstract" in attempt.content_trace.warnings[0]

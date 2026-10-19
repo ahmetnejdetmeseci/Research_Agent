@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from researchpilot.domain.ports import PaperDiscoverySource, PaperRepository
+from researchpilot.domain.ports import (
+    PaperDiscoverySource,
+    PaperRepository,
+    RepositoryDiscoverySource,
+    RepositoryStore,
+)
 
 
 @dataclass(frozen=True)
@@ -66,3 +71,47 @@ class DiscoverPapers:
         )
         inserted = self._repository.add_many(papers)
         return DiscoveryResult(fetched=len(papers), inserted=inserted)
+
+
+@dataclass(frozen=True)
+class RepositoryDiscoveryRequest:
+    """Provider-independent parameters for repository discovery."""
+
+    queries: tuple[str, ...]
+    pushed_after: datetime
+    max_results: int
+    max_readme_characters: int
+
+    def __post_init__(self) -> None:
+        if not self.queries or any(not query.strip() for query in self.queries):
+            raise ValueError("at least one non-empty query is required")
+        if self.pushed_after.tzinfo is None:
+            raise ValueError("pushed_after must include a timezone")
+        if self.max_results < 1:
+            raise ValueError("max_results must be positive")
+        if self.max_readme_characters < 1:
+            raise ValueError("max_readme_characters must be positive")
+
+
+class DiscoverRepositories:
+    """Fetch normalized repositories and persist unseen identities."""
+
+    def __init__(
+        self,
+        source: RepositoryDiscoverySource,
+        repository: RepositoryStore,
+    ) -> None:
+        self._source = source
+        self._repository = repository
+
+    def execute(self, request: RepositoryDiscoveryRequest) -> DiscoveryResult:
+        """Run discovery once and atomically persist returned repositories."""
+
+        repositories = self._source.search(
+            queries=request.queries,
+            pushed_after=request.pushed_after,
+            max_results=request.max_results,
+            max_readme_characters=request.max_readme_characters,
+        )
+        inserted = self._repository.add_many(repositories)
+        return DiscoveryResult(fetched=len(repositories), inserted=inserted)

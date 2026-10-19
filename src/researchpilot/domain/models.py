@@ -79,6 +79,12 @@ class PaperSource(StrEnum):
     ARXIV = "arxiv"
 
 
+class RepositorySource(StrEnum):
+    """A supported source of software-repository metadata."""
+
+    GITHUB = "github"
+
+
 class Paper(DomainModel):
     """Normalized paper metadata independent of an external API response."""
 
@@ -126,13 +132,110 @@ class RankedPaper(DomainModel):
     selected: bool
 
 
+class SoftwareRepository(DomainModel):
+    """Normalized repository metadata independent of an external API response."""
+
+    source: RepositorySource
+    external_id: NonEmptyString
+    full_name: NonEmptyString
+    owner: NonEmptyString
+    name: NonEmptyString
+    description: NonEmptyString | None = None
+    readme: NonEmptyString | None = None
+    url: HttpUrl
+    default_branch: NonEmptyString
+    primary_language: NonEmptyString | None = None
+    topics: list[NonEmptyString] = Field(default_factory=list)
+    stars: int = Field(default=0, ge=0)
+    forks: int = Field(default=0, ge=0)
+    archived: bool = False
+    created_at: datetime
+    updated_at: datetime
+    pushed_at: datetime | None = None
+
+    @field_validator("created_at", "updated_at", "pushed_at")
+    @classmethod
+    def repository_timestamps_must_include_timezone(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        """Require unambiguous timestamps at the domain boundary."""
+
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+        return value
+
+
+class RankedRepository(DomainModel):
+    """A repository plus its deterministic ranking explanation."""
+
+    repository: SoftwareRepository
+    score: float = Field(ge=0)
+    keyword_score: float = Field(ge=0)
+    recency_bonus: float = Field(ge=0)
+    matches: list[KeywordMatch] = Field(default_factory=list)
+    exclusions: list[NonEmptyString] = Field(default_factory=list)
+    selected: bool
+
+
 class AbstractAnalysis(DomainModel):
-    """Validated structured analysis generated from a paper abstract."""
+    """Validated paper analysis, retained under its original public name."""
 
     summary: NonEmptyString
     key_contributions: list[NonEmptyString] = Field(min_length=1, max_length=5)
     relevance_to_profile: NonEmptyString
     limitations: list[NonEmptyString] = Field(default_factory=list, max_length=5)
+
+
+class RepositoryAnalysis(DomainModel):
+    """Validated analysis generated from bounded repository content."""
+
+    summary: NonEmptyString
+    key_capabilities: list[NonEmptyString] = Field(min_length=1, max_length=5)
+    relevance_to_profile: NonEmptyString
+    notable_technologies: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+    limitations: list[NonEmptyString] = Field(default_factory=list, max_length=5)
+
+
+class AnalysisContentKind(StrEnum):
+    """The bounded content supplied to one LLM analysis attempt."""
+
+    ABSTRACT = "abstract"
+    FULL_PAPER = "full_paper"
+    README = "readme"
+    SOURCE_FILES = "source_files"
+    README_AND_SOURCE_FILES = "readme_and_source_files"
+
+
+class ContentReference(DomainModel):
+    """Traceable provenance for one piece of retrieved analysis content."""
+
+    label: NonEmptyString
+    locator: NonEmptyString
+    characters: int = Field(ge=0)
+    truncated: bool = False
+    pages: int | None = Field(default=None, ge=1)
+
+
+class RetrievedContent(DomainModel):
+    """Bounded text returned by a provider-independent content adapter."""
+
+    text: NonEmptyString
+    references: list[ContentReference] = Field(min_length=1)
+    truncated: bool = False
+    warnings: list[NonEmptyString] = Field(default_factory=list)
+
+
+class AnalysisContentTrace(DomainModel):
+    """Persisted provenance for content used without storing the content itself."""
+
+    kind: AnalysisContentKind
+    references: list[ContentReference] = Field(default_factory=list)
+    truncated: bool = False
+    warnings: list[NonEmptyString] = Field(default_factory=list)
 
 
 class AnalysisStatus(StrEnum):
@@ -144,7 +247,7 @@ class AnalysisStatus(StrEnum):
 
 
 class PaperAnalysisRecord(DomainModel):
-    """One persisted, auditable attempt to analyze a paper abstract."""
+    """One persisted, auditable attempt to analyze bounded paper content."""
 
     id: int = Field(gt=0)
     paper_source: PaperSource
@@ -156,6 +259,11 @@ class PaperAnalysisRecord(DomainModel):
     result: AbstractAnalysis | None = None
     raw_output: str | None = None
     error: str | None = None
+    content_trace: AnalysisContentTrace = Field(
+        default_factory=lambda: AnalysisContentTrace(
+            kind=AnalysisContentKind.ABSTRACT
+        )
+    )
     started_at: datetime
     completed_at: datetime | None = None
 
@@ -191,6 +299,118 @@ class PaperAnalysisRecord(DomainModel):
             if self.result is not None:
                 raise ValueError("a failed analysis cannot contain a result")
         return self
+
+
+class RepositoryAnalysisRecord(DomainModel):
+    """One persisted, auditable attempt to analyze repository content."""
+
+    id: int = Field(gt=0)
+    repository_source: RepositorySource
+    repository_external_id: NonEmptyString
+    provider: NonEmptyString
+    model: NonEmptyString
+    attempt_number: int = Field(gt=0)
+    status: AnalysisStatus
+    result: RepositoryAnalysis | None = None
+    raw_output: str | None = None
+    error: str | None = None
+    content_trace: AnalysisContentTrace = Field(
+        default_factory=lambda: AnalysisContentTrace(
+            kind=AnalysisContentKind.README
+        )
+    )
+    started_at: datetime
+    completed_at: datetime | None = None
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def analysis_timestamps_must_include_timezone(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        """Require unambiguous timestamps for analysis attempts."""
+
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def state_must_be_consistent(self) -> Self:
+        """Keep running, succeeded, and failed records internally consistent."""
+
+        if self.status is AnalysisStatus.RUNNING:
+            if self.result is not None or self.error is not None or self.completed_at:
+                raise ValueError("a running analysis cannot contain a result or error")
+        elif self.status is AnalysisStatus.SUCCEEDED:
+            if self.result is None or not self.raw_output or self.completed_at is None:
+                raise ValueError(
+                    "a succeeded analysis requires result, raw output, and completion time"
+                )
+            if self.error is not None:
+                raise ValueError("a succeeded analysis cannot contain an error")
+        elif self.status is AnalysisStatus.FAILED:
+            if not self.error or self.completed_at is None:
+                raise ValueError("a failed analysis requires error and completion time")
+            if self.result is not None:
+                raise ValueError("a failed analysis cannot contain a result")
+        return self
+
+
+class DigestItemKind(StrEnum):
+    """The normalized research-item types included in a digest."""
+
+    PAPER = "paper"
+    REPOSITORY = "repository"
+
+
+class DigestEntry(DomainModel):
+    """One ranked, analyzed research item ready for digest rendering."""
+
+    kind: DigestItemKind
+    source: NonEmptyString
+    external_id: NonEmptyString
+    title: NonEmptyString
+    url: HttpUrl
+    score: float = Field(ge=0)
+    matches: list[KeywordMatch] = Field(default_factory=list)
+    summary: NonEmptyString
+    highlights: list[NonEmptyString] = Field(min_length=1, max_length=5)
+    relevance_to_profile: NonEmptyString
+    notable_technologies: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+    limitations: list[NonEmptyString] = Field(default_factory=list, max_length=5)
+    analysis_provider: NonEmptyString
+    analysis_model: NonEmptyString
+    content_trace: AnalysisContentTrace
+    analyzed_at: datetime
+
+    @field_validator("analyzed_at")
+    @classmethod
+    def analyzed_at_must_include_timezone(cls, value: datetime) -> datetime:
+        """Require an unambiguous analysis completion timestamp."""
+
+        if value.tzinfo is None:
+            raise ValueError("analyzed_at must include a timezone")
+        return value
+
+
+class ResearchDigest(DomainModel):
+    """A deterministic snapshot of ranked, successfully analyzed items."""
+
+    profile_name: NonEmptyString
+    as_of: datetime
+    entries: list[DigestEntry] = Field(min_length=1)
+
+    @field_validator("as_of")
+    @classmethod
+    def as_of_must_include_timezone(cls, value: datetime) -> datetime:
+        """Require an unambiguous ranking snapshot timestamp."""
+
+        if value.tzinfo is None:
+            raise ValueError("as_of must include a timezone")
+        return value
 
 
 class RunStatus(StrEnum):

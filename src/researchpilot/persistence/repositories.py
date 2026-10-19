@@ -11,12 +11,18 @@ from pydantic import ValidationError
 
 from researchpilot.domain import (
     AbstractAnalysis,
+    AnalysisContentKind,
+    AnalysisContentTrace,
     AnalysisStatus,
     Paper,
     PaperAnalysisRecord,
     PaperSource,
+    RepositoryAnalysis,
+    RepositoryAnalysisRecord,
+    RepositorySource,
     RunRecord,
     RunStatus,
+    SoftwareRepository,
 )
 from researchpilot.persistence.database import Database, PersistenceError
 
@@ -55,6 +61,36 @@ def _paper_from_row(row: sqlite3.Row) -> Paper:
         ) from exc
 
 
+def _repository_from_row(row: sqlite3.Row) -> SoftwareRepository:
+    try:
+        return SoftwareRepository.model_validate(
+            {
+                "source": row["source"],
+                "external_id": row["external_id"],
+                "full_name": row["full_name"],
+                "owner": row["owner"],
+                "name": row["name"],
+                "description": row["description"],
+                "readme": row["readme"],
+                "url": row["url"],
+                "default_branch": row["default_branch"],
+                "primary_language": row["primary_language"],
+                "topics": json.loads(row["topics_json"]),
+                "stars": row["stars"],
+                "forks": row["forks"],
+                "archived": bool(row["archived"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "pushed_at": row["pushed_at"],
+            }
+        )
+    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        raise PersistenceError(
+            "stored repository "
+            f"{row['source']}:{row['external_id']} is invalid: {exc}"
+        ) from exc
+
+
 def _run_from_row(row: sqlite3.Row) -> RunRecord:
     try:
         return RunRecord.model_validate(dict(row))
@@ -69,6 +105,9 @@ def _analysis_from_row(row: sqlite3.Row) -> PaperAnalysisRecord:
             if row["result_json"] is None
             else AbstractAnalysis.model_validate_json(row["result_json"])
         )
+        content_trace = AnalysisContentTrace.model_validate_json(
+            row["content_trace_json"]
+        )
         return PaperAnalysisRecord(
             id=row["id"],
             paper_source=row["paper_source"],
@@ -80,10 +119,11 @@ def _analysis_from_row(row: sqlite3.Row) -> PaperAnalysisRecord:
             result=result,
             raw_output=row["raw_output"],
             error=row["error"],
+            content_trace=content_trace,
             started_at=row["started_at"],
             completed_at=row["completed_at"],
         )
-    except ValidationError as exc:
+    except (ValidationError, ValueError, TypeError) as exc:
         raise PersistenceError(
             f"stored analysis attempt {row['id']} is invalid: {exc}"
         ) from exc
@@ -100,10 +140,61 @@ ANALYSIS_SELECT = """
            a.result_json,
            a.raw_output,
            a.error,
+           a.content_trace_json,
            a.started_at,
            a.completed_at
     FROM paper_analysis_attempts AS a
     JOIN papers AS p ON p.id = a.paper_id
+"""
+
+
+def _repository_analysis_from_row(row: sqlite3.Row) -> RepositoryAnalysisRecord:
+    try:
+        result = (
+            None
+            if row["result_json"] is None
+            else RepositoryAnalysis.model_validate_json(row["result_json"])
+        )
+        content_trace = AnalysisContentTrace.model_validate_json(
+            row["content_trace_json"]
+        )
+        return RepositoryAnalysisRecord(
+            id=row["id"],
+            repository_source=row["repository_source"],
+            repository_external_id=row["repository_external_id"],
+            provider=row["provider"],
+            model=row["model"],
+            attempt_number=row["attempt_number"],
+            status=row["status"],
+            result=result,
+            raw_output=row["raw_output"],
+            error=row["error"],
+            content_trace=content_trace,
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise PersistenceError(
+            f"stored repository analysis attempt {row['id']} is invalid: {exc}"
+        ) from exc
+
+
+REPOSITORY_ANALYSIS_SELECT = """
+    SELECT a.id,
+           r.source AS repository_source,
+           r.external_id AS repository_external_id,
+           a.provider,
+           a.model,
+           a.attempt_number,
+           a.status,
+           a.result_json,
+           a.raw_output,
+           a.error,
+           a.content_trace_json,
+           a.started_at,
+           a.completed_at
+    FROM repository_analysis_attempts AS a
+    JOIN repositories AS r ON r.id = a.repository_id
 """
 
 
@@ -206,6 +297,119 @@ class SQLitePaperRepository:
                 row = connection.execute("SELECT COUNT(*) AS count FROM papers").fetchone()
         except sqlite3.Error as exc:
             raise PersistenceError(f"could not count papers: {exc}") from exc
+        return int(row["count"])
+
+
+class SQLiteRepositoryStore:
+    """Store normalized software repositories with source-level deduplication."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def add(self, repository: SoftwareRepository) -> bool:
+        """Store a repository, returning whether it was newly inserted."""
+
+        return self.add_many([repository]) == 1
+
+    def add_many(self, repositories: Iterable[SoftwareRepository]) -> int:
+        """Atomically store repositories and return the number newly inserted."""
+
+        inserted = 0
+        discovered_at = _timestamp(_utc_now())
+        try:
+            with self._database.transaction() as connection:
+                for repository in repositories:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO repositories (
+                            source, external_id, full_name, owner, name,
+                            description, readme, url, default_branch,
+                            primary_language, topics_json, stars, forks, archived,
+                            created_at, updated_at, pushed_at, discovered_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(source, external_id) DO NOTHING
+                        """,
+                        (
+                            repository.source.value,
+                            repository.external_id,
+                            repository.full_name,
+                            repository.owner,
+                            repository.name,
+                            repository.description,
+                            repository.readme,
+                            str(repository.url),
+                            repository.default_branch,
+                            repository.primary_language,
+                            json.dumps(repository.topics, ensure_ascii=False),
+                            repository.stars,
+                            repository.forks,
+                            int(repository.archived),
+                            _timestamp(repository.created_at),
+                            _timestamp(repository.updated_at),
+                            _optional_timestamp(repository.pushed_at),
+                            discovered_at,
+                        ),
+                    )
+                    inserted += cursor.rowcount
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not store repositories: {exc}") from exc
+        return inserted
+
+    def get(
+        self,
+        source: RepositorySource,
+        external_id: str,
+    ) -> SoftwareRepository | None:
+        """Find a repository by its stable source identity."""
+
+        try:
+            with self._database.transaction() as connection:
+                row = connection.execute(
+                    """
+                    SELECT source, external_id, full_name, owner, name,
+                           description, readme, url, default_branch,
+                           primary_language, topics_json, stars, forks, archived,
+                           created_at, updated_at, pushed_at
+                    FROM repositories
+                    WHERE source = ? AND external_id = ?
+                    """,
+                    (source.value, external_id),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not read repository: {exc}") from exc
+        return None if row is None else _repository_from_row(row)
+
+    def list_all(self) -> list[SoftwareRepository]:
+        """Return stored repositories by recent activity with deterministic ties."""
+
+        try:
+            with self._database.transaction() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT source, external_id, full_name, owner, name,
+                           description, readme, url, default_branch,
+                           primary_language, topics_json, stars, forks, archived,
+                           created_at, updated_at, pushed_at
+                    FROM repositories
+                    ORDER BY COALESCE(pushed_at, updated_at) DESC,
+                             source, external_id
+                    """
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not list repositories: {exc}") from exc
+        return [_repository_from_row(row) for row in rows]
+
+    def count(self) -> int:
+        """Return the number of stored repositories."""
+
+        try:
+            with self._database.transaction() as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM repositories"
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not count repositories: {exc}") from exc
         return int(row["count"])
 
 
@@ -314,6 +518,7 @@ class SQLiteAnalysisRepository:
         external_id: str,
         provider: str,
         model: str,
+        content_kind: AnalysisContentKind = AnalysisContentKind.ABSTRACT,
     ) -> PaperAnalysisRecord | None:
         """Return a successful matching provider/model analysis."""
 
@@ -326,6 +531,7 @@ class SQLiteAnalysisRepository:
                       AND p.external_id = ?
                       AND a.provider = ?
                       AND a.model = ?
+                      AND a.content_kind = ?
                       AND a.status = ?
                     """,
                     (
@@ -333,6 +539,7 @@ class SQLiteAnalysisRepository:
                         external_id,
                         provider,
                         model,
+                        content_kind.value,
                         AnalysisStatus.SUCCEEDED.value,
                     ),
                 ).fetchone()
@@ -346,6 +553,7 @@ class SQLiteAnalysisRepository:
         provider: str,
         model: str,
         *,
+        content_trace: AnalysisContentTrace | None = None,
         started_at: datetime | None = None,
     ) -> PaperAnalysisRecord:
         """Create a new running attempt without overwriting prior diagnostics."""
@@ -354,6 +562,14 @@ class SQLiteAnalysisRepository:
         model = model.strip()
         if not provider or not model:
             raise ValueError("provider and model must not be empty")
+        trace = content_trace or AnalysisContentTrace(
+            kind=AnalysisContentKind.ABSTRACT
+        )
+        if trace.kind not in {
+            AnalysisContentKind.ABSTRACT,
+            AnalysisContentKind.FULL_PAPER,
+        }:
+            raise ValueError("paper analysis requires paper content provenance")
         start_time = _utc_now() if started_at is None else started_at
         if start_time.tzinfo is None:
             raise ValueError("started_at must include a timezone")
@@ -373,12 +589,14 @@ class SQLiteAnalysisRepository:
                     """
                     SELECT 1 FROM paper_analysis_attempts
                     WHERE paper_id = ? AND provider = ? AND model = ?
+                      AND content_kind = ?
                       AND status = ?
                     """,
                     (
                         paper_id,
                         provider,
                         model,
+                        trace.kind.value,
                         AnalysisStatus.SUCCEEDED.value,
                     ),
                 ).fetchone()
@@ -399,9 +617,10 @@ class SQLiteAnalysisRepository:
                 cursor = connection.execute(
                     """
                     INSERT INTO paper_analysis_attempts (
-                        paper_id, provider, model, attempt_number, status, started_at
+                        paper_id, provider, model, attempt_number, status,
+                        content_kind, content_trace_json, started_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         paper_id,
@@ -409,6 +628,8 @@ class SQLiteAnalysisRepository:
                         model,
                         int(number_row["next_number"]),
                         AnalysisStatus.RUNNING.value,
+                        trace.kind.value,
+                        trace.model_dump_json(),
                         _timestamp(start_time),
                     ),
                 )
@@ -533,3 +754,270 @@ class SQLiteAnalysisRepository:
         except sqlite3.Error as exc:
             raise PersistenceError(f"could not list paper analyses: {exc}") from exc
         return [_analysis_from_row(row) for row in rows]
+
+
+class SQLiteRepositoryAnalysisStore:
+    """Persist immutable history for repository-content analysis attempts."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def get_success(
+        self,
+        source: RepositorySource,
+        external_id: str,
+        provider: str,
+        model: str,
+        content_kind: AnalysisContentKind = AnalysisContentKind.README,
+    ) -> RepositoryAnalysisRecord | None:
+        """Return a successful matching provider/model analysis."""
+
+        try:
+            with self._database.transaction() as connection:
+                row = connection.execute(
+                    REPOSITORY_ANALYSIS_SELECT
+                    + """
+                    WHERE r.source = ?
+                      AND r.external_id = ?
+                      AND a.provider = ?
+                      AND a.model = ?
+                      AND a.content_kind = ?
+                      AND a.status = ?
+                    """,
+                    (
+                        source.value,
+                        external_id,
+                        provider,
+                        model,
+                        content_kind.value,
+                        AnalysisStatus.SUCCEEDED.value,
+                    ),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"could not read repository analysis: {exc}"
+            ) from exc
+        return None if row is None else _repository_analysis_from_row(row)
+
+    def begin_attempt(
+        self,
+        repository: SoftwareRepository,
+        provider: str,
+        model: str,
+        *,
+        content_trace: AnalysisContentTrace | None = None,
+        started_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Create a new running attempt without overwriting diagnostics."""
+
+        provider = provider.strip()
+        model = model.strip()
+        if not provider or not model:
+            raise ValueError("provider and model must not be empty")
+        trace = content_trace or AnalysisContentTrace(
+            kind=AnalysisContentKind.README
+        )
+        if trace.kind not in {
+            AnalysisContentKind.README,
+            AnalysisContentKind.SOURCE_FILES,
+            AnalysisContentKind.README_AND_SOURCE_FILES,
+        }:
+            raise ValueError(
+                "repository analysis requires repository content provenance"
+            )
+        start_time = _utc_now() if started_at is None else started_at
+        if start_time.tzinfo is None:
+            raise ValueError("started_at must include a timezone")
+
+        try:
+            with self._database.transaction() as connection:
+                repository_row = connection.execute(
+                    "SELECT id FROM repositories WHERE source = ? AND external_id = ?",
+                    (repository.source.value, repository.external_id),
+                ).fetchone()
+                if repository_row is None:
+                    raise PersistenceError(
+                        "repository "
+                        f"{repository.source.value}:{repository.external_id} "
+                        "is not stored"
+                    )
+                repository_id = int(repository_row["id"])
+                succeeded = connection.execute(
+                    """
+                    SELECT 1 FROM repository_analysis_attempts
+                    WHERE repository_id = ? AND provider = ? AND model = ?
+                      AND content_kind = ?
+                      AND status = ?
+                    """,
+                    (
+                        repository_id,
+                        provider,
+                        model,
+                        trace.kind.value,
+                        AnalysisStatus.SUCCEEDED.value,
+                    ),
+                ).fetchone()
+                if succeeded is not None:
+                    raise PersistenceError(
+                        "a successful analysis already exists for "
+                        f"{repository.source.value}:{repository.external_id} with "
+                        f"{provider}/{model}"
+                    )
+                number_row = connection.execute(
+                    """
+                    SELECT COALESCE(MAX(attempt_number), 0) + 1 AS next_number
+                    FROM repository_analysis_attempts
+                    WHERE repository_id = ? AND provider = ? AND model = ?
+                    """,
+                    (repository_id, provider, model),
+                ).fetchone()
+                cursor = connection.execute(
+                    """
+                    INSERT INTO repository_analysis_attempts (
+                        repository_id, provider, model, attempt_number,
+                        status, content_kind, content_trace_json, started_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        repository_id,
+                        provider,
+                        model,
+                        int(number_row["next_number"]),
+                        AnalysisStatus.RUNNING.value,
+                        trace.kind.value,
+                        trace.model_dump_json(),
+                        _timestamp(start_time),
+                    ),
+                )
+                row = connection.execute(
+                    REPOSITORY_ANALYSIS_SELECT + " WHERE a.id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"could not start repository analysis: {exc}"
+            ) from exc
+        return _repository_analysis_from_row(row)
+
+    def succeed(
+        self,
+        attempt_id: int,
+        result: RepositoryAnalysis,
+        raw_output: str,
+        *,
+        completed_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Complete a running attempt and retain its raw model output."""
+
+        if not raw_output.strip():
+            raise ValueError("raw_output must not be empty")
+        completion_time = _utc_now() if completed_at is None else completed_at
+        if completion_time.tzinfo is None:
+            raise ValueError("completed_at must include a timezone")
+
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE repository_analysis_attempts
+                    SET status = ?, result_json = ?, raw_output = ?,
+                        error = NULL, completed_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        AnalysisStatus.SUCCEEDED.value,
+                        result.model_dump_json(),
+                        raw_output,
+                        _timestamp(completion_time),
+                        attempt_id,
+                        AnalysisStatus.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PersistenceError(
+                        "repository analysis attempt "
+                        f"{attempt_id} is missing or already finished"
+                    )
+                row = connection.execute(
+                    REPOSITORY_ANALYSIS_SELECT + " WHERE a.id = ?",
+                    (attempt_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"could not complete repository analysis: {exc}"
+            ) from exc
+        return _repository_analysis_from_row(row)
+
+    def fail(
+        self,
+        attempt_id: int,
+        error: str,
+        *,
+        raw_output: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> RepositoryAnalysisRecord:
+        """Fail a running attempt while retaining available diagnostics."""
+
+        error = error.strip()
+        if not error:
+            raise ValueError("error must not be empty")
+        completion_time = _utc_now() if completed_at is None else completed_at
+        if completion_time.tzinfo is None:
+            raise ValueError("completed_at must include a timezone")
+
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE repository_analysis_attempts
+                    SET status = ?, result_json = NULL, raw_output = ?,
+                        error = ?, completed_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        AnalysisStatus.FAILED.value,
+                        raw_output,
+                        error,
+                        _timestamp(completion_time),
+                        attempt_id,
+                        AnalysisStatus.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PersistenceError(
+                        "repository analysis attempt "
+                        f"{attempt_id} is missing or already finished"
+                    )
+                row = connection.execute(
+                    REPOSITORY_ANALYSIS_SELECT + " WHERE a.id = ?",
+                    (attempt_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"could not fail repository analysis: {exc}"
+            ) from exc
+        return _repository_analysis_from_row(row)
+
+    def list_attempts(
+        self,
+        source: RepositorySource,
+        external_id: str,
+    ) -> list[RepositoryAnalysisRecord]:
+        """Return all attempts for a repository in creation order."""
+
+        try:
+            with self._database.transaction() as connection:
+                rows = connection.execute(
+                    REPOSITORY_ANALYSIS_SELECT
+                    + """
+                    WHERE r.source = ? AND r.external_id = ?
+                    ORDER BY a.id
+                    """,
+                    (source.value, external_id),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"could not list repository analyses: {exc}"
+            ) from exc
+        return [_repository_analysis_from_row(row) for row in rows]

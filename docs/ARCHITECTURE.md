@@ -71,6 +71,40 @@ paper source to a paper repository. It returns fetched, inserted, and duplicate
 counts; the same service can later accept another source without importing
 ArXiv-specific types.
 
+`GitHubSource` implements the repository-discovery port through the GitHub REST
+API. It runs configured repository queries with a pushed-date and non-archived
+filter, paginates in API order, deduplicates stable numeric repository IDs
+across queries, and retrieves README Markdown when available. Optional
+authentication comes only from `GITHUB_TOKEN`. Search and README payloads remain
+adapter-local; the adapter returns normalized `SoftwareRepository` models and
+translates transport, response, and rate-limit failures into `GitHubError`.
+README content is bounded by the configured character limit before it enters
+the domain.
+
+`DiscoverRepositories` connects a repository source to a repository store and
+returns the same fetched, inserted, and duplicate counts. A missing README is
+valid repository metadata rather than a failed discovery.
+
+### Full-content acquisition
+
+Full-content acquisition is optional and bounded before content reaches an LLM.
+`ArxivPDFContentProvider` streams a paper PDF with a byte limit, validates the
+document, and extracts text through `pypdf` with page and character limits.
+Encrypted, malformed, image-only, oversized, unavailable, or partially
+extractable documents produce a provider-independent content error or warning;
+the application can continue with the abstract.
+
+`GitHubContentSource` retrieves a recursive repository tree, applies configured
+include and exclude patterns, and fetches only selected UTF-8 files. Per-file
+bytes, file count, and aggregate characters are bounded. Missing, binary,
+oversized, rate-limited, or unavailable files do not invalidate stored README
+content. A repository without a README may still be analyzed when selected
+source files are available.
+
+Extracted PDF and source text is ephemeral and is not stored in SQLite. Analysis
+attempts retain a compact `AnalysisContentTrace`: content kind, locators,
+character counts, page count where applicable, truncation state, and warnings.
+
 ### Deterministic ranking
 
 `RankPapers` loads normalized papers through the repository port and delegates
@@ -89,7 +123,12 @@ component, and decision. Rankings are currently derived on demand rather than
 persisted because they depend on the active profile and evaluation time. This
 avoids stale stored scores while the ranking contract is still evolving.
 
-### Abstract analysis
+`RankRepositories` applies the same contribution, exclusion, threshold, and
+recency policy to repository names, descriptions, topics, primary language, and
+README content. Recent activity uses `pushed_at` when available and otherwise
+`updated_at`. Repository rankings are also computed on demand.
+
+### LLM analysis
 
 `LLMProvider` is a provider-independent port accepting a system prompt, user
 prompt, and JSON schema, and returning raw generated text. `OllamaProvider`
@@ -98,16 +137,53 @@ model, the Pydantic response schema, and temperature zero. It translates HTTP,
 timeout, connectivity, and malformed-envelope failures into `LLMProviderError`.
 
 `AnalyzePapers` recomputes deterministic rankings, processes only selected
-papers, and skips papers that already have a successful analysis for the same
-provider/model pair. It validates raw output as `AbstractAnalysis`, containing a
-summary, one to five key contributions, profile relevance, and up to five
-limitations. The prompt treats paper content as data and asks the model not to
-invent details absent from the abstract.
+papers, and uses bounded full-paper text when enabled and available. Otherwise
+it uses the abstract and records the fallback reason. It validates raw output as
+`AbstractAnalysis`, containing a summary, one to five key contributions,
+profile relevance, and up to five limitations. The prompt treats supplied
+content as data and asks the model not to invent unsupported details.
 
 Analysis runs are bounded by `max_papers_per_run`. A provider outage fails the
 current attempt and stops the run rather than repeatedly contacting a down
 service; invalid structured output fails only that paper and allows the run to
 continue.
+
+`AnalyzeRepositories` follows the same bounded, auditable workflow. When source
+content is enabled, selected files augment the README or provide the complete
+input when no README exists. Acquisition failure falls back to the README;
+items with neither source text nor a README are reported as partial outcomes
+without creating a failed LLM attempt.
+
+Successful analyses are unique by item, provider, model, and content kind. An
+existing abstract or README success therefore does not prevent a later
+full-paper or source-enhanced analysis. Failed structured output remains
+retryable.
+
+### Digest generation
+
+`BuildDigest` is a provider-independent workflow over paper, repository, and
+analysis ports. It recomputes deterministic rankings, considers only selected
+items, and reads successful analyses for the configured provider and model. A
+full-paper analysis is preferred over an abstract analysis. A combined README
+and source-file analysis is preferred over source-only and README-only results.
+The configured paper and repository limits bound digest length; selected items
+without a matching analysis are reported rather than analyzed implicitly.
+
+When no explicit snapshot time is supplied, the digest ranking clock is the
+latest publication or repository-activity timestamp in the stored input. This
+makes unchanged local state and configuration render byte-for-byte identical
+Markdown instead of allowing wall-clock recency drift. Each entry includes the
+source link, score and keyword matches, structured summary, relevance,
+limitations, provider/model identity, content kind, analysis completion time,
+and retained content references and warnings.
+
+`LocalMarkdownDigestWriter` is a narrow filesystem adapter. It writes a safe,
+profile-specific filename under the configured directory, replaces the whole
+file through an atomic rename, and leaves an identical existing file untouched.
+It never appends, so rebuilding a snapshot cannot duplicate entries. Markdown
+is derived output and is ignored by version control; SQLite analysis history
+remains the source of truth. The general exporter boundary and Obsidian-specific
+path behavior remain Milestone 10 work.
 
 ### Persistence
 
@@ -128,8 +204,19 @@ to be finished only once.
 earlier diagnostics. Each attempt records provider, model, attempt number,
 state, raw output when available, validated structured output on success, error
 on failure, and timestamps. A partial unique index permits only one successful
-analysis for each paper/provider/model while failed or interrupted attempts can
-be retried as new rows.
+analysis for each paper/provider/model/content-kind while failed or interrupted
+attempts can be retried as new rows.
+
+`SQLiteRepositoryStore` persists normalized repository metadata and enforces
+unique `(source, external_id)` identity. `SQLiteRepositoryAnalysisStore`
+retains immutable README-analysis attempts and permits only one successful
+result per repository/provider/model/content-kind while preserving retry
+diagnostics.
+
+The fourth migration adds content kind and JSON provenance to both analysis
+attempt tables. Legacy attempts become `abstract` or `readme` attempts. Partial
+unique indexes include content kind so baseline and enriched analyses can
+coexist without being repeated.
 
 The database path uses the following precedence: the CLI `--database` option,
 `RESEARCHPILOT_DATABASE`, then `researchpilot.db`. Database commands do not
@@ -163,12 +250,32 @@ The `ollama` section controls local base URL, model, and request timeout;
 section limits attempts per command run. Defaults preserve compatibility with
 older profiles.
 
+The optional `sources.github` section controls whether GitHub discovery is
+enabled, ordered search queries, activity lookback, result limit, and README
+character limit. It defaults to disabled so older profiles remain valid. The
+`GITHUB_TOKEN` environment variable enables authenticated API requests; tokens
+are never read from YAML. Paper and repository analysis have independent
+per-run limits.
+
+The `content` section independently enables paper PDFs and repository source
+files. Paper settings bound download bytes, pages, and extracted characters.
+Repository settings define relative POSIX include/exclude patterns plus file,
+byte, and aggregate-character limits. Both paths default to disabled, preserving
+the existing abstract-only and README-only behavior.
+
+The `digest` section selects a local output directory and independently bounds
+paper and repository entries. Defaults are `digests`, ten papers, and ten
+repositories. `digest build --output-directory` can override the directory for
+one command without changing the profile.
+
 ## Planned data flow
 
 ```text
-ArXiv adapter -> DiscoverPapers -> Paper -> SQLite -> RankPapers
-       -> AnalyzePapers -> LLMProvider -> SQLite attempts
-       -> digest builder -> exporter
+ArXiv adapter  -> DiscoverPapers       -> Paper              -> SQLite
+GitHub adapter -> DiscoverRepositories -> SoftwareRepository -> SQLite
+       -> deterministic ranking -> bounded analysis -> LLMProvider
+       -> immutable attempt history -> digest builder -> local Markdown
+       -> future exporter
 ```
 
 Each step records enough status to be safely retried. Exported Markdown is

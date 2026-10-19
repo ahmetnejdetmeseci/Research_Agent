@@ -50,13 +50,20 @@ When the planned core workflow is complete, ResearchPilot will:
 
 ## Current product state
 
-The foundation, configuration/domain, local-persistence, and ArXiv-discovery
-milestones exist. ResearchPilot can validate a YAML interest profile, discover
-recent papers in configured ArXiv categories, normalize and persist metadata
-without duplicates, rank stored papers with explainable deterministic rules, and
-analyze selected abstracts through a local Ollama model while retaining an
-auditable attempt history. It does not yet process full papers or export
-digests.
+The foundation through digest-generation milestones exist. ResearchPilot can
+validate a YAML interest profile; discover recent ArXiv papers and GitHub
+repositories; normalize and persist both item types without duplicates; rank
+them with explainable deterministic rules; and analyze selected abstracts,
+bounded PDF text, READMEs, or explicitly selected source files through a local
+Ollama model. Full-content acquisition is opt-in and falls back safely to an
+abstract or README, with content provenance and fallback reasons retained.
+
+ResearchPilot can build a concise local Markdown digest from selected items
+that have successful analyses for the configured model. Digests include source
+links, ranking matches, analysis provenance, and content references. An
+unchanged local-state snapshot produces byte-for-byte identical output, and
+rebuilding replaces the generated file rather than appending duplicate entries.
+Obsidian and other export targets are not implemented yet.
 
 ## Non-goals for the initial milestones
 

@@ -4,16 +4,24 @@ import pytest
 
 from researchpilot.domain import (
     AbstractAnalysis,
+    AnalysisContentKind,
+    AnalysisContentTrace,
     AnalysisStatus,
+    ContentReference,
     Paper,
     PaperSource,
+    RepositoryAnalysis,
+    RepositorySource,
     RunStatus,
+    SoftwareRepository,
 )
 from researchpilot.persistence import (
     Database,
     PersistenceError,
     SQLiteAnalysisRepository,
     SQLitePaperRepository,
+    SQLiteRepositoryAnalysisStore,
+    SQLiteRepositoryStore,
     SQLiteRunRepository,
 )
 
@@ -35,6 +43,31 @@ def make_paper(
         url=f"https://arxiv.org/abs/{external_id}",
         pdf_url=f"https://arxiv.org/pdf/{external_id}",
         categories=["cs.AI", "cs.CL"],
+    )
+
+
+def make_repository(
+    external_id: str = "123",
+    *,
+    pushed_at: datetime | None = None,
+) -> SoftwareRepository:
+    return SoftwareRepository(
+        source=RepositorySource.GITHUB,
+        external_id=external_id,
+        full_name=f"example/repository-{external_id}",
+        owner="example",
+        name=f"repository-{external_id}",
+        description="Agent planning tools.",
+        readme="# Repository\nPlanning tools.",
+        url=f"https://github.com/example/repository-{external_id}",
+        default_branch="main",
+        primary_language="Python",
+        topics=["agents", "planning"],
+        stars=42,
+        forks=3,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        pushed_at=pushed_at or datetime(2026, 10, 2, tzinfo=timezone.utc),
     )
 
 
@@ -89,6 +122,32 @@ def test_papers_are_listed_newest_first(database) -> None:
         "2601.00002",
         "2601.00001",
     ]
+
+
+def test_repository_round_trip_and_deduplication(database) -> None:
+    store = SQLiteRepositoryStore(database)
+    repository = make_repository()
+
+    assert store.add(repository) is True
+    assert store.add(repository.model_copy(update={"stars": 100})) is False
+    assert store.get(repository.source, repository.external_id) == repository
+    assert store.count() == 1
+    assert database.status().repository_count == 1
+
+
+def test_repositories_are_listed_by_recent_activity(database) -> None:
+    store = SQLiteRepositoryStore(database)
+    older = make_repository(
+        "1",
+        pushed_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    newer = make_repository(
+        "2",
+        pushed_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    )
+    store.add_many([older, newer])
+
+    assert [item.external_id for item in store.list_all()] == ["2", "1"]
 
 
 def test_run_history_can_be_started_and_finished(database) -> None:
@@ -165,6 +224,7 @@ def test_analysis_attempt_history_preserves_failure_and_success(database) -> Non
     assert failed.attempt_number == 1
     assert succeeded.status is AnalysisStatus.SUCCEEDED
     assert succeeded.result == result
+    assert succeeded.content_trace.kind is AnalysisContentKind.ABSTRACT
     assert succeeded.attempt_number == 2
     assert attempts == [failed, succeeded]
     assert analysis_repository.get_success(
@@ -191,3 +251,147 @@ def test_successful_analysis_prevents_another_matching_attempt(database) -> None
 
     with pytest.raises(PersistenceError, match="already exists"):
         analysis_repository.begin_attempt(paper, "ollama", "llama3.2")
+
+
+def test_paper_successes_are_distinct_by_content_kind(database) -> None:
+    papers = SQLitePaperRepository(database)
+    analyses = SQLiteAnalysisRepository(database)
+    paper = make_paper()
+    papers.add(paper)
+    result = AbstractAnalysis(
+        summary="Summary",
+        key_contributions=["Contribution"],
+        relevance_to_profile="Relevant",
+    )
+
+    abstract_attempt = analyses.begin_attempt(paper, "ollama", "llama3.2")
+    analyses.succeed(abstract_attempt.id, result, result.model_dump_json())
+    full_trace = AnalysisContentTrace(
+        kind=AnalysisContentKind.FULL_PAPER,
+        references=[
+            ContentReference(
+                label="ArXiv PDF",
+                locator=str(paper.pdf_url),
+                characters=10_000,
+                pages=8,
+            )
+        ],
+    )
+    full_attempt = analyses.begin_attempt(
+        paper,
+        "ollama",
+        "llama3.2",
+        content_trace=full_trace,
+    )
+    full_success = analyses.succeed(
+        full_attempt.id,
+        result,
+        result.model_dump_json(),
+    )
+
+    assert full_success.content_trace == full_trace
+    assert analyses.get_success(
+        paper.source,
+        paper.external_id,
+        "ollama",
+        "llama3.2",
+        AnalysisContentKind.FULL_PAPER,
+    ) == full_success
+
+
+def test_repository_analysis_preserves_failure_and_success(database) -> None:
+    repository_store = SQLiteRepositoryStore(database)
+    analysis_store = SQLiteRepositoryAnalysisStore(database)
+    repository = make_repository()
+    repository_store.add(repository)
+    started_at = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+
+    first = analysis_store.begin_attempt(
+        repository,
+        "ollama",
+        "llama3.2",
+        started_at=started_at,
+    )
+    failed = analysis_store.fail(
+        first.id,
+        "invalid structured output",
+        raw_output="not json",
+        completed_at=started_at + timedelta(seconds=1),
+    )
+    second = analysis_store.begin_attempt(
+        repository,
+        "ollama",
+        "llama3.2",
+        started_at=started_at + timedelta(seconds=2),
+    )
+    result = RepositoryAnalysis(
+        summary="A useful repository.",
+        key_capabilities=["Agent planning."],
+        relevance_to_profile="Directly relevant.",
+        notable_technologies=["Python"],
+    )
+    succeeded = analysis_store.succeed(
+        second.id,
+        result,
+        result.model_dump_json(),
+        completed_at=started_at + timedelta(seconds=3),
+    )
+
+    attempts = analysis_store.list_attempts(
+        repository.source,
+        repository.external_id,
+    )
+    assert failed.status is AnalysisStatus.FAILED
+    assert succeeded.status is AnalysisStatus.SUCCEEDED
+    assert succeeded.result == result
+    assert succeeded.content_trace.kind is AnalysisContentKind.README
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2]
+    assert analysis_store.get_success(
+        repository.source,
+        repository.external_id,
+        "ollama",
+        "llama3.2",
+    ) == succeeded
+    assert database.status().repository_analysis_attempt_count == 2
+
+
+def test_repository_successes_are_distinct_by_content_kind(database) -> None:
+    repositories = SQLiteRepositoryStore(database)
+    analyses = SQLiteRepositoryAnalysisStore(database)
+    repository = make_repository()
+    repositories.add(repository)
+    result = RepositoryAnalysis(
+        summary="Summary",
+        key_capabilities=["Planning"],
+        relevance_to_profile="Relevant",
+    )
+
+    readme_attempt = analyses.begin_attempt(
+        repository,
+        "ollama",
+        "llama3.2",
+    )
+    analyses.succeed(readme_attempt.id, result, result.model_dump_json())
+    source_trace = AnalysisContentTrace(
+        kind=AnalysisContentKind.README_AND_SOURCE_FILES,
+        references=[
+            ContentReference(
+                label="src/main.py",
+                locator="https://github.com/example/repository-123/blob/main/src/main.py",
+                characters=500,
+            )
+        ],
+    )
+    source_attempt = analyses.begin_attempt(
+        repository,
+        "ollama",
+        "llama3.2",
+        content_trace=source_trace,
+    )
+    source_success = analyses.succeed(
+        source_attempt.id,
+        result,
+        result.model_dump_json(),
+    )
+
+    assert source_success.content_trace == source_trace

@@ -11,3 +11,4 @@ dist/
 .env
 researchpilot.db
 config/profile.yaml
+/digests/
