@@ -44,6 +44,7 @@ class DatabaseStatus:
     run_count: int
     analysis_attempt_count: int
     repository_analysis_attempt_count: int
+    run_step_count: int
 
     @property
     def pending_migrations(self) -> int:
@@ -191,6 +192,7 @@ class Database:
                 run_count=0,
                 analysis_attempt_count=0,
                 repository_analysis_attempt_count=0,
+                run_step_count=0,
             )
 
         try:
@@ -227,6 +229,11 @@ class Database:
                     tables,
                     "repository_analysis_attempts",
                 )
+                run_step_count = self._table_count(
+                    connection,
+                    tables,
+                    "run_steps",
+                )
                 initialized = (
                     current_version == latest_version
                     and {
@@ -235,6 +242,7 @@ class Database:
                         "paper_analysis_attempts",
                         "repositories",
                         "repository_analysis_attempts",
+                        "run_steps",
                     }.issubset(tables)
                 )
         except sqlite3.Error as exc:
@@ -253,6 +261,7 @@ class Database:
             run_count=run_count,
             analysis_attempt_count=analysis_attempt_count,
             repository_analysis_attempt_count=repository_analysis_attempt_count,
+            run_step_count=run_step_count,
         )
 
     @staticmethod

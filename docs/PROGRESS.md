@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 10 — Obsidian export. Complete and verified offline.
+Milestone 11 — Periodic end-to-end runs. Complete and verified offline.
 
 ## Completed features
 
@@ -152,12 +152,35 @@ Milestone 10 — Obsidian export. Complete and verified offline.
 - Backwards-compatible `exports.obsidian` defaults. The example intentionally
   leaves the user-specific vault path unset and defaults the folder to
   `ResearchPilot`.
-- Project version `0.10.0`.
+- Fifth SQLite migration for stable pipeline identities and ordered run-step
+  state with status, attempt count, scalar metrics, error, and timestamps.
+- Provider-independent `RunPipeline` coordinator over typed ordered step
+  definitions and a `PipelineRepository` port.
+- `run` command composing enabled ArXiv and GitHub discovery, bounded paper and
+  repository analysis, digest generation, and configured Obsidian export.
+- Disabled source/export steps and no-content digest/export steps are persisted
+  as explicit skips rather than hidden omissions or failures.
+- A pipeline's original start time is reused for discovery windows and ranking
+  when an interrupted run resumes.
+- Hard interruptions retain a running step. A later invocation with the same
+  resolved config/database identity skips completed steps and retries only the
+  interrupted step, incrementing its attempt count.
+- Normal step errors persist failed step and run outcomes. A later new run is
+  safe because discovery, analysis, digest, and export operations remain
+  independently idempotent.
+- Per-database non-blocking process lock prevents overlapping cron, launchd, or
+  manual pipeline invocations and is released by the operating system on exit.
+- Pipeline step counts in `db status` and concise ordered step metrics in `run`
+  output.
+- `docs/SCHEDULING.md` with absolute-path cron and launchd examples, environment
+  and secret guidance, exit-code behavior, manual verification, logging, and
+  resume semantics. No in-process scheduler was introduced.
+- Project version `0.11.0`.
 
-Periodic end-to-end runs, scheduling guidance, and web functionality are not
-implemented. Extracted full content is intentionally ephemeral; ranking results
-remain computed on demand, and Markdown digests and Obsidian notes are derived
-local output.
+FastAPI, dashboard, additional delivery channels, and agent-loop functionality
+are not implemented. Extracted full content is intentionally ephemeral;
+ranking results remain computed on demand, and Markdown digests and Obsidian
+notes are derived local output.
 
 ## Current runnable commands
 
@@ -187,6 +210,7 @@ python -m researchpilot digest build --config config/profile.example.yaml
 python -m researchpilot digest build --config /path/to/profile.yaml --database /path/to/researchpilot.db --output-directory /path/to/digests
 python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml
 python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml --digest-directory /path/to/digests --vault-path /path/to/obsidian-vault
+python -m researchpilot run --config /path/to/profile.yaml --database /path/to/researchpilot.db
 pytest
 ```
 
@@ -204,13 +228,18 @@ directory. Configure `exports.obsidian.vault_path` and optionally its `folder`,
 or pass `--vault-path` for one command. Export reads local Markdown only; it does
 not require SQLite, Ollama, ArXiv, or GitHub access.
 
+The end-to-end `run` command requires an initialized, current database. It uses
+the normal source enablement settings and exports to Obsidian only when a vault
+is configured. See `docs/SCHEDULING.md` before installing a cron or launchd
+entry.
+
 ## Tests and status
 
 - Verified on 2026-10-29 in the project virtual environment.
 - Host interpreter: Python 3.14.6.
-- Pytest: 152 tests passed.
+- Pytest: 162 tests passed.
 - `python -m researchpilot --help`: passed.
-- `researchpilot --version`: passed and reported version `0.10.0`.
+- `researchpilot --version`: passed and reported version `0.11.0`.
 - Example and environment-selected configuration checks: passed.
 - Missing configuration returns exit code 2 with an actionable error: passed.
 - Fresh database status returns exit code 1 without creating a file: passed.
@@ -275,9 +304,23 @@ not require SQLite, Ollama, ArXiv, or GitHub access.
 - `digest export --target obsidian` CLI creation, idempotent re-export, path
   overrides, unconfigured-vault errors, and unrelated-note preservation: passed
   with temporary digest directories and vaults.
+- Fifth migration installation and version-one upgrade, pipeline schema
+  readiness, and run-step counts: passed with temporary SQLite databases.
+- Pipeline repository step ordering, disabled-step outcomes, lifecycle guards,
+  scalar metrics, attempt increments, active-run resume, and changed-definition
+  rejection: passed.
+- Pipeline coordinator success, normal failure, dynamic skips, hard interruption,
+  completed-step reuse, and interrupted-step retry: passed offline.
+- Complete `run` CLI composition across fake ArXiv, GitHub, and Ollama adapters;
+  repeated execution deduplicates discoveries, reuses analyses, rewrites one
+  deterministic digest, and records all step outcomes: passed.
+- Per-database process lock rejects overlapping invocations and becomes
+  acquirable after release: passed with a temporary lock file.
+- Python bytecode compilation, dependency consistency, CLI help, configuration
+  validation, and version output: passed.
 
 ## Next milestone
 
-Milestone 11 — Periodic end-to-end runs. Add an idempotent `run` command for the
-configured pipeline and document cron and launchd usage. Interrupted runs must
-resume without duplicating completed work.
+Milestone 12 — API and dashboard. Expose stable application services through
+FastAPI and build the dashboard on those endpoints without moving business
+logic into route handlers.

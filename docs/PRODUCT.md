@@ -50,7 +50,7 @@ When the planned core workflow is complete, ResearchPilot will:
 
 ## Current product state
 
-The foundation through Obsidian-export milestones exist. ResearchPilot can
+The foundation through periodic end-to-end runs is in place. ResearchPilot can
 validate a YAML interest profile; discover recent ArXiv papers and GitHub
 repositories; normalize and persist both item types without duplicates; rank
 them with explainable deterministic rules; and analyze selected abstracts,
@@ -69,6 +69,12 @@ ResearchPilot uses a managed-note marker, safe generated filenames, relative
 vault folders, and symbolic-link checks. It updates only notes it previously
 created; a colliding ordinary note is never silently overwritten. Other export
 targets are not implemented yet.
+
+One `run` command performs the configured discovery, analysis, digest, and
+optional Obsidian-export pipeline. Step outcomes are persisted locally,
+overlapping invocations for the same database are rejected, and a run left
+incomplete by a hard interruption resumes without repeating completed steps.
+Scheduling is delegated to cron or launchd rather than an in-process daemon.
 
 ## Non-goals for the initial milestones
 

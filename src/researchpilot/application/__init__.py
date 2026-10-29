@@ -12,6 +12,13 @@ from researchpilot.application.analysis import (
     RepositoryAnalysisRunResult,
 )
 from researchpilot.application.exports import DigestExportResult, ExportDigest
+from researchpilot.application.pipeline import (
+    PipelineContext,
+    PipelineRunResult,
+    PipelineStepDefinition,
+    PipelineStepExecution,
+    RunPipeline,
+)
 from researchpilot.application.ranking import (
     DeterministicPaperRanker,
     DeterministicRepositoryRanker,
@@ -45,8 +52,13 @@ __all__ = [
     "RankRepositories",
     "RankingPolicy",
     "PaperContentPolicy",
+    "PipelineContext",
+    "PipelineRunResult",
+    "PipelineStepDefinition",
+    "PipelineStepExecution",
     "RepositoryDiscoveryRequest",
     "RepositoryAnalysisFailure",
     "RepositoryAnalysisRunResult",
     "RepositoryContentPolicy",
+    "RunPipeline",
 ]

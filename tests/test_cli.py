@@ -139,13 +139,15 @@ def test_database_init_and_status(capsys, tmp_path) -> None:
     assert "002_paper_analysis_attempts" in init_output.out
     assert "003_github_repositories" in init_output.out
     assert "004_analysis_content_provenance" in init_output.out
+    assert "005_pipeline_runs" in init_output.out
     assert status_result == 0
     assert "Status: ready" in status_output.out
-    assert "Schema version: 4/4" in status_output.out
+    assert "Schema version: 5/5" in status_output.out
     assert "Papers: 0" in status_output.out
     assert "Repositories: 0" in status_output.out
     assert "Runs: 0" in status_output.out
     assert "Analysis attempts: 0" in status_output.out
+    assert "Pipeline steps: 0" in status_output.out
 
 
 def test_database_status_reports_not_initialized(capsys, tmp_path) -> None:
@@ -539,6 +541,139 @@ def test_digest_export_requires_configured_vault(capsys, tmp_path) -> None:
     captured = capsys.readouterr()
     assert result == 2
     assert "Obsidian vault path is not configured" in captured.err
+
+
+def test_run_pipeline_is_idempotent_and_records_every_step(
+    capsys,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "researchpilot.db"
+    database = Database(database_path)
+    database.initialize()
+    config_path = write_test_config(tmp_path)
+    digest_directory = tmp_path / "digests"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f"\n\ndigest:\n  output_directory: {digest_directory}\n",
+        encoding="utf-8",
+    )
+
+    class FakeArxivSource:
+        def __init__(self, client) -> None:
+            pass
+
+        def search(self, **kwargs) -> list[Paper]:
+            return [
+                Paper(
+                    source=PaperSource.ARXIV,
+                    external_id="2610.00001",
+                    title="Planning for agentic systems",
+                    abstract="A paper about tool use.",
+                    authors=["Ada Lovelace"],
+                    published_at=datetime.now(timezone.utc),
+                    url="https://arxiv.org/abs/2610.00001",
+                )
+            ]
+
+    class FakeGitHubSource:
+        def __init__(self, client, *, token=None) -> None:
+            pass
+
+        def search(self, **kwargs) -> list[SoftwareRepository]:
+            now = datetime.now(timezone.utc)
+            return [
+                SoftwareRepository(
+                    source=RepositorySource.GITHUB,
+                    external_id="42",
+                    full_name="example/planning-agent",
+                    owner="example",
+                    name="planning-agent",
+                    description="Agent planning tools",
+                    readme="Tool use for agentic systems.",
+                    url="https://github.com/example/planning-agent",
+                    default_branch="main",
+                    primary_language="Python",
+                    topics=["planning"],
+                    stars=10,
+                    created_at=now,
+                    updated_at=now,
+                    pushed_at=now,
+                )
+            ]
+
+    class FakeOllamaProvider:
+        provider_name = "ollama"
+        model_name = "llama3.2"
+        calls = 0
+
+        def __init__(self, client, *, base_url, model) -> None:
+            self.model_name = model
+
+        def generate(self, *, response_schema, **kwargs) -> str:
+            type(self).calls += 1
+            properties = response_schema["properties"]
+            if "key_contributions" in properties:
+                return """{
+                    "summary": "Paper summary.",
+                    "key_contributions": ["Contribution."],
+                    "relevance_to_profile": "Relevant.",
+                    "limitations": []
+                }"""
+            return """{
+                "summary": "Repository summary.",
+                "key_capabilities": ["Planning."],
+                "relevance_to_profile": "Relevant.",
+                "notable_technologies": ["Python"],
+                "limitations": []
+            }"""
+
+    monkeypatch.setattr("researchpilot.cli.ArxivSource", FakeArxivSource)
+    monkeypatch.setattr("researchpilot.cli.GitHubSource", FakeGitHubSource)
+    monkeypatch.setattr("researchpilot.cli.OllamaProvider", FakeOllamaProvider)
+    command = [
+        "run",
+        "--config",
+        str(config_path),
+        "--database",
+        str(database_path),
+    ]
+
+    first_result = main(command)
+    first_output = capsys.readouterr()
+    second_result = main(command)
+    second_output = capsys.readouterr()
+
+    assert first_result == second_result == 0
+    assert "Pipeline status: succeeded" in first_output.out
+    assert "[succeeded] discover_arxiv" in first_output.out
+    assert "[succeeded] build_digest" in first_output.out
+    assert "[skipped] export_obsidian" in first_output.out
+    assert "duplicates=1" in second_output.out
+    assert "already_complete=1" in second_output.out
+    assert FakeOllamaProvider.calls == 2
+    assert database.status().run_count == 2
+    assert database.status().run_step_count == 12
+    assert len(list(digest_directory.glob("*.md"))) == 1
+
+
+def test_run_pipeline_requires_current_database(capsys, tmp_path) -> None:
+    database_path = tmp_path / "missing.db"
+
+    result = main(
+        [
+            "run",
+            "--config",
+            str(write_test_config(tmp_path)),
+            "--database",
+            str(database_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "database is not initialized or needs migration" in captured.err
+    assert database_path.exists() is False
 
 
 def test_analyze_papers_reports_invalid_structured_output(

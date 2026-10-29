@@ -12,10 +12,12 @@ from researchpilot.persistence.database import (
 from researchpilot.persistence.repositories import (
     SQLiteAnalysisRepository,
     SQLitePaperRepository,
+    SQLitePipelineRepository,
     SQLiteRepositoryAnalysisStore,
     SQLiteRepositoryStore,
     SQLiteRunRepository,
 )
+from researchpilot.persistence.lock import LocalRunLock, RunLockError
 
 __all__ = [
     "DATABASE_PATH_ENV",
@@ -23,9 +25,12 @@ __all__ = [
     "Database",
     "DatabaseStatus",
     "Migration",
+    "LocalRunLock",
     "PersistenceError",
+    "RunLockError",
     "SQLiteAnalysisRepository",
     "SQLitePaperRepository",
+    "SQLitePipelineRepository",
     "SQLiteRepositoryAnalysisStore",
     "SQLiteRepositoryStore",
     "SQLiteRunRepository",

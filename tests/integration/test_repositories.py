@@ -10,6 +10,7 @@ from researchpilot.domain import (
     ContentReference,
     Paper,
     PaperSource,
+    PipelineStepStatus,
     RepositoryAnalysis,
     RepositorySource,
     RunStatus,
@@ -20,6 +21,7 @@ from researchpilot.persistence import (
     PersistenceError,
     SQLiteAnalysisRepository,
     SQLitePaperRepository,
+    SQLitePipelineRepository,
     SQLiteRepositoryAnalysisStore,
     SQLiteRepositoryStore,
     SQLiteRunRepository,
@@ -177,6 +179,88 @@ def test_run_can_only_be_finished_once(database) -> None:
 
     with pytest.raises(PersistenceError, match="already finished"):
         repository.finish(running.id, RunStatus.SUCCEEDED)
+
+
+def test_pipeline_repository_records_ordered_step_outcomes(database) -> None:
+    repository = SQLitePipelineRepository(database)
+    started_at = datetime(2026, 10, 29, 8, 0, tzinfo=timezone.utc)
+    session = repository.begin_or_resume(
+        "pipeline-key",
+        "run",
+        (("discover", True), ("export", False)),
+        started_at=started_at,
+    )
+
+    running = repository.start_step(
+        session.run.id,
+        "discover",
+        started_at=started_at + timedelta(seconds=1),
+    )
+    succeeded = repository.succeed_step(
+        session.run.id,
+        "discover",
+        {"inserted": 2, "duplicates": 1},
+        finished_at=started_at + timedelta(seconds=2),
+    )
+    finished = repository.finish_run(
+        session.run.id,
+        RunStatus.SUCCEEDED,
+        finished_at=started_at + timedelta(seconds=3),
+    )
+    steps = repository.list_steps(session.run.id)
+
+    assert session.resumed is False
+    assert session.run.run_key == "pipeline-key"
+    assert running.status is PipelineStepStatus.RUNNING
+    assert running.attempt_count == 1
+    assert succeeded.status is PipelineStepStatus.SUCCEEDED
+    assert succeeded.result == {"inserted": 2, "duplicates": 1}
+    assert steps[1].status is PipelineStepStatus.SKIPPED
+    assert steps[1].result == {"reason": "disabled"}
+    assert finished.status is RunStatus.SUCCEEDED
+    assert database.status().run_step_count == 2
+
+
+def test_pipeline_repository_resumes_running_step(database) -> None:
+    repository = SQLitePipelineRepository(database)
+    session = repository.begin_or_resume(
+        "pipeline-key",
+        "run",
+        (("first", True), ("interrupted", True)),
+    )
+    repository.start_step(session.run.id, "first")
+    repository.succeed_step(session.run.id, "first", {"done": True})
+    first_attempt = repository.start_step(session.run.id, "interrupted")
+
+    resumed = repository.begin_or_resume(
+        "pipeline-key",
+        "run",
+        (("first", True), ("interrupted", True)),
+    )
+    second_attempt = repository.start_step(session.run.id, "interrupted")
+
+    assert resumed.resumed is True
+    assert resumed.run.id == session.run.id
+    assert first_attempt.attempt_count == 1
+    assert second_attempt.attempt_count == 2
+    assert resumed.steps[0].status is PipelineStepStatus.SUCCEEDED
+    assert resumed.steps[1].status is PipelineStepStatus.RUNNING
+
+
+def test_pipeline_resume_rejects_changed_step_definition(database) -> None:
+    repository = SQLitePipelineRepository(database)
+    repository.begin_or_resume(
+        "pipeline-key",
+        "run",
+        (("first", True),),
+    )
+
+    with pytest.raises(PersistenceError, match="different step definition"):
+        repository.begin_or_resume(
+            "pipeline-key",
+            "run",
+            (("changed", True),),
+        )
 
 
 def test_analysis_attempt_history_preserves_failure_and_success(database) -> None:

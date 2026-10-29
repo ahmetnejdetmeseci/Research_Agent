@@ -15,6 +15,7 @@ def test_bundled_migrations_are_consecutively_numbered() -> None:
         (2, "paper_analysis_attempts"),
         (3, "github_repositories"),
         (4, "analysis_content_provenance"),
+        (5, "pipeline_runs"),
     ]
 
 
@@ -26,7 +27,7 @@ def test_missing_database_status_does_not_create_file(tmp_path) -> None:
     assert status.exists is False
     assert status.initialized is False
     assert status.current_version == 0
-    assert status.latest_version == 4
+    assert status.latest_version == 5
     assert path.exists() is False
 
 
@@ -37,15 +38,16 @@ def test_initialization_is_idempotent(tmp_path) -> None:
     second_applied = database.initialize()
     status = database.status()
 
-    assert [migration.version for migration in first_applied] == [1, 2, 3, 4]
+    assert [migration.version for migration in first_applied] == [1, 2, 3, 4, 5]
     assert second_applied == ()
     assert status.initialized is True
-    assert status.current_version == status.latest_version == 4
+    assert status.current_version == status.latest_version == 5
     assert status.paper_count == 0
     assert status.repository_count == 0
     assert status.run_count == 0
     assert status.analysis_attempt_count == 0
     assert status.repository_analysis_attempt_count == 0
+    assert status.run_step_count == 0
 
 
 def test_failed_transaction_rolls_back(tmp_path) -> None:
@@ -101,5 +103,6 @@ def test_existing_version_one_database_is_upgraded(tmp_path) -> None:
         (2, "paper_analysis_attempts"),
         (3, "github_repositories"),
         (4, "analysis_content_provenance"),
+        (5, "pipeline_runs"),
     ]
     assert Database(path).status().initialized is True

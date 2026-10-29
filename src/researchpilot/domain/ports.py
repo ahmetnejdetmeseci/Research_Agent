@@ -14,6 +14,8 @@ from researchpilot.domain.models import (
     Paper,
     PaperAnalysisRecord,
     PaperSource,
+    PipelineSession,
+    PipelineStepRecord,
     RepositoryAnalysis,
     RepositoryAnalysisRecord,
     RepositorySource,
@@ -192,6 +194,72 @@ class RunRepository(Protocol):
 
     def get(self, run_id: int) -> RunRecord | None:
         """Find a history record by ID."""
+
+
+class PipelineRepository(Protocol):
+    """Persist resumable end-to-end run and step state."""
+
+    def begin_or_resume(
+        self,
+        run_key: str,
+        command: str,
+        steps: Sequence[tuple[str, bool]],
+        *,
+        started_at: datetime | None = None,
+    ) -> PipelineSession:
+        """Start a run or return its unfinished matching session."""
+
+    def start_step(
+        self,
+        run_id: int,
+        name: str,
+        *,
+        started_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Start or restart one incomplete step."""
+
+    def succeed_step(
+        self,
+        run_id: int,
+        name: str,
+        result: dict[str, str | int | float | bool | None],
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Complete a running step successfully."""
+
+    def skip_step(
+        self,
+        run_id: int,
+        name: str,
+        result: dict[str, str | int | float | bool | None],
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Complete a running step as intentionally skipped."""
+
+    def fail_step(
+        self,
+        run_id: int,
+        name: str,
+        error: str,
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Record a failed running step."""
+
+    def finish_run(
+        self,
+        run_id: int,
+        status: RunStatus,
+        *,
+        finished_at: datetime | None = None,
+        error: str | None = None,
+    ) -> RunRecord:
+        """Finish the owning run."""
+
+    def list_steps(self, run_id: int) -> list[PipelineStepRecord]:
+        """Return ordered step state for a run."""
 
 
 class AnalysisRepository(Protocol):

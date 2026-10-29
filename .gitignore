@@ -10,5 +10,6 @@ dist/
 .DS_Store
 .env
 researchpilot.db
+*.db.run.lock
 config/profile.yaml
 /digests/

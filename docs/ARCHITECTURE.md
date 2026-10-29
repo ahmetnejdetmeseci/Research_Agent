@@ -205,6 +205,31 @@ managed note is atomically replaced. Any existing note without the ownership
 marker is treated as unrelated and causes an actionable error. There is no
 force-overwrite option in this milestone.
 
+### Periodic end-to-end runs
+
+`RunPipeline` is a provider-independent coordinator over ordered typed step
+definitions and a `PipelineRepository` port. The CLI composes the existing
+discovery, analysis, digest, and export use cases into six explicit steps:
+ArXiv discovery, GitHub discovery, paper analysis, repository analysis, digest
+building, and Obsidian export. Source steps follow their enabled settings;
+Obsidian export is enabled only when a vault is configured. Digest and export
+steps may record an intentional skip when no analyzed content is available.
+
+Each pipeline is identified by its resolved configuration and database paths.
+The original run start time is reused as the discovery and ranking clock after
+a resume. Step status, attempt count, scalar metrics, errors, and timestamps are
+persisted. A normal step exception records both the step and run as failed. A
+hard process interruption leaves the current step and run in `running` state;
+the next invocation skips succeeded or skipped steps and restarts only the
+interrupted step. All underlying operations remain independently idempotent, so
+a new run after a recorded failure is also safe.
+
+`LocalRunLock` holds a non-blocking advisory lock beside the selected database
+for the lifetime of the command. This prevents cron or launchd invocations from
+overlapping while allowing the operating system to release the lock after a
+crash. ResearchPilot does not contain a timer, background thread, or daemon;
+`docs/SCHEDULING.md` documents absolute-path cron and launchd invocations.
+
 ### Persistence
 
 SQLite will be accessed with the Python `sqlite3` module through repository
@@ -237,6 +262,11 @@ The fourth migration adds content kind and JSON provenance to both analysis
 attempt tables. Legacy attempts become `abstract` or `readme` attempts. Partial
 unique indexes include content kind so baseline and enriched analyses can
 coexist without being repeated.
+
+The fifth migration adds a nullable pipeline identity to existing run history
+and an ordered `run_steps` table. A partial unique index permits only one active
+run per pipeline identity. Legacy run rows remain valid and have no pipeline
+identity.
 
 The database path uses the following precedence: the CLI `--database` option,
 `RESEARCHPILOT_DATABASE`, then `researchpilot.db`. Database commands do not
@@ -302,6 +332,7 @@ GitHub adapter -> DiscoverRepositories -> SoftwareRepository -> SQLite
        -> deterministic ranking -> bounded analysis -> LLMProvider
        -> immutable attempt history -> digest builder -> local Markdown
        -> ExportDigest -> Obsidian filesystem adapter
+OS scheduler -> RunPipeline -> persisted run/step outcomes
 ```
 
 Each step records enough status to be safely retried. Exported Markdown is
@@ -314,8 +345,8 @@ derived output; SQLite remains the local source of truth.
 - A failed analysis is not marked complete and may be retried.
 - CLI commands return nonzero exit codes for failed operations and concise,
   actionable messages.
-- Scheduled runs will record step outcomes and identifiers so interrupted runs
-  can resume without duplicating work.
+- Scheduled runs record step outcomes and identifiers so interrupted runs can
+  resume without duplicating work.
 
 ## Testing strategy
 

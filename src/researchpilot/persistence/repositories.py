@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 
 from pydantic import ValidationError
@@ -17,6 +17,9 @@ from researchpilot.domain import (
     Paper,
     PaperAnalysisRecord,
     PaperSource,
+    PipelineSession,
+    PipelineStepRecord,
+    PipelineStepStatus,
     RepositoryAnalysis,
     RepositoryAnalysisRecord,
     RepositorySource,
@@ -96,6 +99,36 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         return RunRecord.model_validate(dict(row))
     except ValidationError as exc:
         raise PersistenceError(f"stored run {row['id']} is invalid: {exc}") from exc
+
+
+def _pipeline_step_from_row(row: sqlite3.Row) -> PipelineStepRecord:
+    try:
+        result = (
+            None if row["result_json"] is None else json.loads(row["result_json"])
+        )
+        return PipelineStepRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            name=row["name"],
+            position=row["position"],
+            status=row["status"],
+            attempt_count=row["attempt_count"],
+            result=result,
+            error=row["error"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
+    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
+        raise PersistenceError(
+            f"stored pipeline step {row['id']} is invalid: {exc}"
+        ) from exc
+
+
+PIPELINE_STEP_SELECT = """
+    SELECT id, run_id, name, position, status, attempt_count,
+           result_json, error, started_at, finished_at
+    FROM run_steps
+"""
 
 
 def _analysis_from_row(row: sqlite3.Row) -> PaperAnalysisRecord:
@@ -504,6 +537,299 @@ class SQLiteRunRepository:
         except sqlite3.Error as exc:
             raise PersistenceError(f"could not read run history: {exc}") from exc
         return None if row is None else _run_from_row(row)
+
+
+class SQLitePipelineRepository:
+    """Persist resumable pipeline runs and ordered step outcomes."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def begin_or_resume(
+        self,
+        run_key: str,
+        command: str,
+        steps: Sequence[tuple[str, bool]],
+        *,
+        started_at: datetime | None = None,
+    ) -> PipelineSession:
+        """Start a pipeline run or resume its unfinished matching run."""
+
+        run_key = run_key.strip()
+        command = command.strip()
+        if not run_key or not command:
+            raise ValueError("run_key and command must not be empty")
+        if not steps:
+            raise ValueError("pipeline requires at least one step")
+        names = [name.strip() for name, _ in steps]
+        if any(not name for name in names) or len(names) != len(set(names)):
+            raise ValueError("pipeline step names must be non-empty and unique")
+        start_time = _utc_now() if started_at is None else started_at
+        if start_time.tzinfo is None:
+            raise ValueError("started_at must include a timezone")
+
+        try:
+            with self._database.transaction() as connection:
+                run_row = connection.execute(
+                    """
+                    SELECT * FROM runs
+                    WHERE run_key = ? AND status = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (run_key, RunStatus.RUNNING.value),
+                ).fetchone()
+                resumed = run_row is not None
+                if run_row is None:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO runs(command, run_key, status, started_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            command,
+                            run_key,
+                            RunStatus.RUNNING.value,
+                            _timestamp(start_time),
+                        ),
+                    )
+                    run_id = int(cursor.lastrowid)
+                    for position, ((_, enabled), name) in enumerate(
+                        zip(steps, names, strict=True)
+                    ):
+                        if enabled:
+                            status = PipelineStepStatus.PENDING.value
+                            result_json = None
+                            finished_at = None
+                        else:
+                            status = PipelineStepStatus.SKIPPED.value
+                            result_json = json.dumps(
+                                {"reason": "disabled"},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            finished_at = _timestamp(start_time)
+                        connection.execute(
+                            """
+                            INSERT INTO run_steps (
+                                run_id, name, position, status, result_json,
+                                finished_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                run_id,
+                                name,
+                                position,
+                                status,
+                                result_json,
+                                finished_at,
+                            ),
+                        )
+                    run_row = connection.execute(
+                        "SELECT * FROM runs WHERE id = ?",
+                        (run_id,),
+                    ).fetchone()
+                run = _run_from_row(run_row)
+                step_rows = connection.execute(
+                    PIPELINE_STEP_SELECT
+                    + " WHERE run_id = ? ORDER BY position",
+                    (run.id,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not begin pipeline run: {exc}") from exc
+
+        records = [_pipeline_step_from_row(row) for row in step_rows]
+        if [record.name for record in records] != names:
+            raise PersistenceError(
+                f"active pipeline run {run.id} has a different step definition"
+            )
+        return PipelineSession(run=run, steps=records, resumed=resumed)
+
+    def start_step(
+        self,
+        run_id: int,
+        name: str,
+        *,
+        started_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Start or restart an incomplete step and increment its attempt count."""
+
+        start_time = _utc_now() if started_at is None else started_at
+        if start_time.tzinfo is None:
+            raise ValueError("started_at must include a timezone")
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE run_steps
+                    SET status = ?, attempt_count = attempt_count + 1,
+                        result_json = NULL, error = NULL, started_at = ?,
+                        finished_at = NULL
+                    WHERE run_id = ? AND name = ?
+                      AND status IN (?, ?, ?)
+                      AND EXISTS (
+                          SELECT 1 FROM runs
+                          WHERE runs.id = run_steps.run_id AND runs.status = ?
+                      )
+                    """,
+                    (
+                        PipelineStepStatus.RUNNING.value,
+                        _timestamp(start_time),
+                        run_id,
+                        name,
+                        PipelineStepStatus.PENDING.value,
+                        PipelineStepStatus.RUNNING.value,
+                        PipelineStepStatus.FAILED.value,
+                        RunStatus.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PersistenceError(
+                        f"pipeline step {run_id}:{name} cannot be started"
+                    )
+                row = connection.execute(
+                    PIPELINE_STEP_SELECT + " WHERE run_id = ? AND name = ?",
+                    (run_id, name),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not start pipeline step: {exc}") from exc
+        return _pipeline_step_from_row(row)
+
+    def succeed_step(
+        self,
+        run_id: int,
+        name: str,
+        result: dict[str, str | int | float | bool | None],
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Complete one running step successfully."""
+
+        return self._finish_step(
+            run_id,
+            name,
+            PipelineStepStatus.SUCCEEDED,
+            result=result,
+            finished_at=finished_at,
+        )
+
+    def skip_step(
+        self,
+        run_id: int,
+        name: str,
+        result: dict[str, str | int | float | bool | None],
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Complete one running step as intentionally skipped."""
+
+        return self._finish_step(
+            run_id,
+            name,
+            PipelineStepStatus.SKIPPED,
+            result=result,
+            finished_at=finished_at,
+        )
+
+    def fail_step(
+        self,
+        run_id: int,
+        name: str,
+        error: str,
+        *,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        """Complete one running step with an error."""
+
+        error = error.strip()
+        if not error:
+            raise ValueError("pipeline step error must not be empty")
+        return self._finish_step(
+            run_id,
+            name,
+            PipelineStepStatus.FAILED,
+            error=error,
+            finished_at=finished_at,
+        )
+
+    def _finish_step(
+        self,
+        run_id: int,
+        name: str,
+        status: PipelineStepStatus,
+        *,
+        result: dict[str, str | int | float | bool | None] | None = None,
+        error: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> PipelineStepRecord:
+        finish_time = _utc_now() if finished_at is None else finished_at
+        if finish_time.tzinfo is None:
+            raise ValueError("finished_at must include a timezone")
+        result_json = (
+            None
+            if result is None
+            else json.dumps(result, sort_keys=True, separators=(",", ":"))
+        )
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE run_steps
+                    SET status = ?, result_json = ?, error = ?, finished_at = ?
+                    WHERE run_id = ? AND name = ? AND status = ?
+                    """,
+                    (
+                        status.value,
+                        result_json,
+                        error,
+                        _timestamp(finish_time),
+                        run_id,
+                        name,
+                        PipelineStepStatus.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PersistenceError(
+                        f"pipeline step {run_id}:{name} is missing or not running"
+                    )
+                row = connection.execute(
+                    PIPELINE_STEP_SELECT + " WHERE run_id = ? AND name = ?",
+                    (run_id, name),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not finish pipeline step: {exc}") from exc
+        return _pipeline_step_from_row(row)
+
+    def finish_run(
+        self,
+        run_id: int,
+        status: RunStatus,
+        *,
+        finished_at: datetime | None = None,
+        error: str | None = None,
+    ) -> RunRecord:
+        """Finish a pipeline run through the existing run lifecycle."""
+
+        return SQLiteRunRepository(self._database).finish(
+            run_id,
+            status,
+            finished_at=finished_at,
+            error=error,
+        )
+
+    def list_steps(self, run_id: int) -> list[PipelineStepRecord]:
+        """Return pipeline steps in configured order."""
+
+        try:
+            with self._database.transaction() as connection:
+                rows = connection.execute(
+                    PIPELINE_STEP_SELECT + " WHERE run_id = ? ORDER BY position",
+                    (run_id,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not list pipeline steps: {exc}") from exc
+        return [_pipeline_step_from_row(row) for row in rows]
 
 
 class SQLiteAnalysisRepository:

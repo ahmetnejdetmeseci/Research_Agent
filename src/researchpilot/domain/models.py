@@ -441,6 +441,7 @@ class RunRecord(DomainModel):
 
     id: int = Field(gt=0)
     command: NonEmptyString
+    run_key: NonEmptyString | None = None
     status: RunStatus
     started_at: datetime
     finished_at: datetime | None = None
@@ -457,3 +458,94 @@ class RunRecord(DomainModel):
         if value is not None and value.tzinfo is None:
             raise ValueError("timestamp must include a timezone")
         return value
+
+
+class PipelineStepStatus(StrEnum):
+    """Lifecycle state for one persisted pipeline step."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class PipelineStepRecord(DomainModel):
+    """Persisted state and scalar metrics for one pipeline step."""
+
+    id: int = Field(gt=0)
+    run_id: int = Field(gt=0)
+    name: NonEmptyString
+    position: int = Field(ge=0)
+    status: PipelineStepStatus
+    attempt_count: int = Field(ge=0)
+    result: dict[str, str | int | float | bool | None] | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    @field_validator("started_at", "finished_at")
+    @classmethod
+    def step_timestamps_must_include_timezone(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        """Require unambiguous timestamps in pipeline history."""
+
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def state_must_be_consistent(self) -> Self:
+        """Reject impossible pending, running, and completed step states."""
+
+        if self.status is PipelineStepStatus.PENDING:
+            if self.attempt_count or any(
+                value is not None
+                for value in (
+                    self.result,
+                    self.error,
+                    self.started_at,
+                    self.finished_at,
+                )
+            ):
+                raise ValueError("a pending step cannot contain outcome data")
+        elif self.status is PipelineStepStatus.RUNNING:
+            if self.attempt_count < 1 or self.started_at is None:
+                raise ValueError("a running step requires an attempt and start time")
+            if any(
+                value is not None
+                for value in (self.result, self.error, self.finished_at)
+            ):
+                raise ValueError("a running step cannot contain an outcome")
+        elif self.status is PipelineStepStatus.SUCCEEDED:
+            if (
+                self.attempt_count < 1
+                or self.started_at is None
+                or self.finished_at is None
+                or self.result is None
+                or self.error is not None
+            ):
+                raise ValueError("a succeeded step requires result and timestamps")
+        elif self.status is PipelineStepStatus.FAILED:
+            if (
+                self.attempt_count < 1
+                or self.started_at is None
+                or self.finished_at is None
+                or not self.error
+                or self.result is not None
+            ):
+                raise ValueError("a failed step requires error and timestamps")
+        elif self.status is PipelineStepStatus.SKIPPED:
+            if self.finished_at is None or self.result is None or self.error is not None:
+                raise ValueError("a skipped step requires a result and finish time")
+        return self
+
+
+class PipelineSession(DomainModel):
+    """A newly started or resumable pipeline run and its ordered steps."""
+
+    run: RunRecord
+    steps: list[PipelineStepRecord] = Field(min_length=1)
+    resumed: bool

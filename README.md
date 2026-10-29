@@ -7,11 +7,11 @@ to a configurable interest profile.
 The project is intentionally being built in small, runnable milestones. The
 current version discovers and stores ArXiv papers and GitHub repositories,
 ranks both with an explainable interest profile, analyzes selected content
-through a local Ollama model, builds deterministic local Markdown digests, and
-exports generated digests safely into an Obsidian vault. Optional bounded PDF
-extraction and selected GitHub source-file retrieval enrich the existing
-abstract and README workflows; unavailable content falls back safely with
-persisted provenance.
+through a local Ollama model, builds deterministic local Markdown digests,
+exports generated digests safely into an Obsidian vault, and runs the configured
+pipeline idempotently from one command. Optional bounded PDF extraction and
+selected GitHub source-file retrieval enrich the existing abstract and README
+workflows; unavailable content falls back safely with persisted provenance.
 
 ## Requirements
 
@@ -40,6 +40,7 @@ python -m researchpilot analyze papers --config config/profile.example.yaml
 python -m researchpilot analyze repositories --config config/profile.example.yaml
 python -m researchpilot digest build --config config/profile.example.yaml
 python -m researchpilot digest export --target obsidian --config config/profile.example.yaml
+python -m researchpilot run --config config/profile.example.yaml
 pytest
 ```
 
@@ -75,6 +76,12 @@ it under the configured relative vault folder. It updates only notes carrying
 ResearchPilot's ownership marker and refuses to overwrite an unrelated note
 with the same filename. `--vault-path` and `--digest-directory` provide
 one-command path overrides.
+
+`run` performs enabled discovery, bounded analysis, digest generation, and
+configured Obsidian export. Each step and its outcome are persisted. A hard
+interruption can resume without repeating completed steps, and an advisory lock
+prevents overlapping runs for the same database. See
+[docs/SCHEDULING.md](docs/SCHEDULING.md) for cron and launchd examples.
 
 Read [docs/PROGRESS.md](docs/PROGRESS.md) for the exact current status and next
 milestone.
