@@ -182,8 +182,28 @@ profile-specific filename under the configured directory, replaces the whole
 file through an atomic rename, and leaves an identical existing file untouched.
 It never appends, so rebuilding a snapshot cannot duplicate entries. Markdown
 is derived output and is ignored by version control; SQLite analysis history
-remains the source of truth. The general exporter boundary and Obsidian-specific
-path behavior remain Milestone 10 work.
+remains the source of truth.
+
+### Obsidian export
+
+`DigestReader` and `DigestExporter` are provider-independent ports for loading
+one generated digest and delivering it to a configured destination.
+`ExportDigest` connects those ports and reports the digest content hash,
+destination path, and whether the export was created, updated, or unchanged. It
+does not rebuild the digest, read SQLite, or contact Ollama or source APIs.
+
+`LocalMarkdownDigestReader` reads only a validated plain Markdown filename from
+the configured digest directory. It rejects missing, empty, non-regular, and
+symbolic-link inputs. `ObsidianExporter` requires an existing vault directory,
+creates only a normalized relative folder beneath it, rejects symbolic links in
+the destination path, and retains the profile-specific digest filename.
+
+Each exported note begins with a ResearchPilot ownership marker containing the
+source digest hash. A missing destination is created without overwriting a
+concurrent file; an identical managed note is left untouched; and a changed
+managed note is atomically replaced. Any existing note without the ownership
+marker is treated as unrelated and causes an actionable error. There is no
+force-overwrite option in this milestone.
 
 ### Persistence
 
@@ -268,6 +288,12 @@ paper and repository entries. Defaults are `digests`, ten papers, and ten
 repositories. `digest build --output-directory` can override the directory for
 one command without changing the profile.
 
+The `exports.obsidian` section contains an optional vault path and a normalized
+relative folder, defaulting to `ResearchPilot`. The example leaves the vault
+unset because it is user-specific. `digest export --target obsidian` requires a
+configured path or a one-command `--vault-path` override; `--digest-directory`
+can locate a digest built with an earlier output-directory override.
+
 ## Planned data flow
 
 ```text
@@ -275,7 +301,7 @@ ArXiv adapter  -> DiscoverPapers       -> Paper              -> SQLite
 GitHub adapter -> DiscoverRepositories -> SoftwareRepository -> SQLite
        -> deterministic ranking -> bounded analysis -> LLMProvider
        -> immutable attempt history -> digest builder -> local Markdown
-       -> future exporter
+       -> ExportDigest -> Obsidian filesystem adapter
 ```
 
 Each step records enough status to be safely retried. Exported Markdown is

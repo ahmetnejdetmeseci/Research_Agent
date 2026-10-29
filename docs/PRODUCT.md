@@ -50,7 +50,7 @@ When the planned core workflow is complete, ResearchPilot will:
 
 ## Current product state
 
-The foundation through digest-generation milestones exist. ResearchPilot can
+The foundation through Obsidian-export milestones exist. ResearchPilot can
 validate a YAML interest profile; discover recent ArXiv papers and GitHub
 repositories; normalize and persist both item types without duplicates; rank
 them with explainable deterministic rules; and analyze selected abstracts,
@@ -63,7 +63,12 @@ that have successful analyses for the configured model. Digests include source
 links, ranking matches, analysis provenance, and content references. An
 unchanged local-state snapshot produces byte-for-byte identical output, and
 rebuilding replaces the generated file rather than appending duplicate entries.
-Obsidian and other export targets are not implemented yet.
+
+An existing generated digest can be exported into a configured Obsidian vault.
+ResearchPilot uses a managed-note marker, safe generated filenames, relative
+vault folders, and symbolic-link checks. It updates only notes it previously
+created; a colliding ordinary note is never silently overwritten. Other export
+targets are not implemented yet.
 
 ## Non-goals for the initial milestones
 

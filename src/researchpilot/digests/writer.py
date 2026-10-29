@@ -6,6 +6,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from researchpilot.digests.paths import validate_markdown_filename
+
 
 class DigestWriteError(Exception):
     """A local digest file could not be written safely."""
@@ -20,8 +22,7 @@ class LocalMarkdownDigestWriter:
     def write(self, filename: str, content: str) -> str:
         """Write complete content, never append, and return the target path."""
 
-        if Path(filename).name != filename or not filename.endswith(".md"):
-            raise ValueError("digest filename must be a plain Markdown filename")
+        validate_markdown_filename(filename)
         target = self._output_directory / filename
         temporary_path: Path | None = None
         try:

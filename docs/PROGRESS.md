@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 9 — Digest generation. Complete and verified offline.
+Milestone 10 — Obsidian export. Complete and verified offline.
 
 ## Completed features
 
@@ -132,11 +132,32 @@ Milestone 9 — Digest generation. Complete and verified offline.
   and does not contact Ollama or source APIs.
 - Backwards-compatible `digest` configuration defaults for output directory and
   item limits. The generated root `digests/` directory is ignored by Git.
-- Project version `0.9.0`.
+- Provider-independent `DigestReader` and `DigestExporter` ports plus an
+  `ExportDigest` application service that does not depend on filesystem types.
+- Local generated-digest reader with safe filename validation and explicit
+  missing, empty, non-regular, and symbolic-link failures.
+- Filesystem-based Obsidian adapter requiring an existing vault and a normalized
+  relative destination folder beneath that vault.
+- ResearchPilot ownership markers containing the source digest hash distinguish
+  managed exports from unrelated notes.
+- Idempotent export outcomes: new managed notes are created, identical notes are
+  unchanged, and changed managed notes are atomically updated.
+- Existing notes without the ownership marker are refused and preserved exactly;
+  there is no force-overwrite path.
+- Safe path enforcement rejects traversal, absolute folders, ambiguous folder
+  syntax, unsafe filenames, non-directory components, and symbolic links within
+  the vault export path.
+- `digest export --target obsidian` with configured vault/folder settings plus
+  optional `--vault-path` and `--digest-directory` command overrides.
+- Backwards-compatible `exports.obsidian` defaults. The example intentionally
+  leaves the user-specific vault path unset and defaults the folder to
+  `ResearchPilot`.
+- Project version `0.10.0`.
 
-Obsidian export, scheduling, and web functionality are not implemented.
-Extracted full content is intentionally ephemeral; ranking results remain
-computed on demand, and Markdown digests are derived local output.
+Periodic end-to-end runs, scheduling guidance, and web functionality are not
+implemented. Extracted full content is intentionally ephemeral; ranking results
+remain computed on demand, and Markdown digests and Obsidian notes are derived
+local output.
 
 ## Current runnable commands
 
@@ -164,6 +185,8 @@ python -m researchpilot rank repositories --config config/profile.example.yaml
 python -m researchpilot analyze repositories --config config/profile.example.yaml
 python -m researchpilot digest build --config config/profile.example.yaml
 python -m researchpilot digest build --config /path/to/profile.yaml --database /path/to/researchpilot.db --output-directory /path/to/digests
+python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml
+python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml --digest-directory /path/to/digests --vault-path /path/to/obsidian-vault
 pytest
 ```
 
@@ -176,13 +199,18 @@ Digest generation requires at least one selected paper or repository with a
 successful analysis for the configured Ollama model. It reads local state only;
 an Ollama server is not required while building the digest.
 
+Obsidian export requires an existing generated digest and an existing vault
+directory. Configure `exports.obsidian.vault_path` and optionally its `folder`,
+or pass `--vault-path` for one command. Export reads local Markdown only; it does
+not require SQLite, Ollama, ArXiv, or GitHub access.
+
 ## Tests and status
 
-- Verified on 2026-10-15 in the project virtual environment.
+- Verified on 2026-10-29 in the project virtual environment.
 - Host interpreter: Python 3.14.6.
-- Pytest: 134 tests passed.
+- Pytest: 152 tests passed.
 - `python -m researchpilot --help`: passed.
-- `researchpilot --version`: passed and reported version `0.9.0`.
+- `researchpilot --version`: passed and reported version `0.10.0`.
 - Example and environment-selected configuration checks: passed.
 - Missing configuration returns exit code 2 with an actionable error: passed.
 - Fresh database status returns exit code 1 without creating a file: passed.
@@ -237,9 +265,19 @@ an Ollama server is not required while building the digest.
 - `digest build` CLI composition, exact rebuild stability, one-entry-only
   output, output-directory override, and actionable missing-analysis behavior:
   passed with a temporary SQLite database.
+- Export-service orchestration through provider-independent reader/exporter
+  ports and source digest hashing: passed with in-memory fakes.
+- Obsidian managed-note creation, unchanged re-export, safe managed update,
+  nested relative folders, and ownership markers: passed with temporary vaults.
+- Traversal, absolute and ambiguous folders, unsafe filenames, missing vaults,
+  symbolic-link escapes, and unrelated-note collisions: refused without
+  modifying out-of-scope files.
+- `digest export --target obsidian` CLI creation, idempotent re-export, path
+  overrides, unconfigured-vault errors, and unrelated-note preservation: passed
+  with temporary digest directories and vaults.
 
 ## Next milestone
 
-Milestone 10 — Obsidian export. Add an exporter port and filesystem-based
-Obsidian adapter with configurable vault paths and safe filenames. Unrelated
-notes must never be silently overwritten.
+Milestone 11 — Periodic end-to-end runs. Add an idempotent `run` command for the
+configured pipeline and document cron and launchd usage. Interrupted runs must
+resume without duplicating completed work.

@@ -10,6 +10,7 @@ from researchpilot.domain.models import (
     AbstractAnalysis,
     AnalysisContentKind,
     AnalysisContentTrace,
+    DigestExportReceipt,
     Paper,
     PaperAnalysisRecord,
     PaperSource,
@@ -36,6 +37,20 @@ class DigestWriter(Protocol):
 
     def write(self, filename: str, content: str) -> str:
         """Write content idempotently and return its display path."""
+
+
+class DigestReader(Protocol):
+    """Read one generated digest without exposing filesystem details."""
+
+    def read(self, filename: str) -> str:
+        """Return the complete generated digest content."""
+
+
+class DigestExporter(Protocol):
+    """Export generated Markdown to one configured destination."""
+
+    def export(self, filename: str, content: str) -> DigestExportReceipt:
+        """Export content without silently replacing unrelated artifacts."""
 
 
 class LLMProvider(Protocol):

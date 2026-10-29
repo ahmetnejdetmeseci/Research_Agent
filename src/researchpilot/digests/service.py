@@ -141,7 +141,7 @@ class BuildDigest:
         )
         markdown = render_markdown(digest)
         digest_id = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-        path = self._writer.write(_digest_filename(profile.name), markdown)
+        path = self._writer.write(digest_filename(profile.name), markdown)
         return DigestBuildResult(
             path=path,
             digest_id=digest_id,
@@ -330,7 +330,9 @@ class BuildDigest:
         )
 
 
-def _digest_filename(profile_name: str) -> str:
+def digest_filename(profile_name: str) -> str:
+    """Return the stable, safe generated filename for one profile."""
+
     slug = re.sub(r"[^a-z0-9]+", "-", profile_name.casefold()).strip("-")
     slug = (slug or "profile")[:48].rstrip("-")
     profile_id = hashlib.sha256(profile_name.encode("utf-8")).hexdigest()[:8]

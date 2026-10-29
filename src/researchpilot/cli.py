@@ -17,6 +17,7 @@ from researchpilot.application import (
     DiscoverPapers,
     DiscoverRepositories,
     DiscoveryRequest,
+    ExportDigest,
     RankPapers,
     RankRepositories,
     RankingPolicy,
@@ -35,8 +36,12 @@ from researchpilot.digests import (
     BuildDigest,
     DigestBuildError,
     DigestWriteError,
+    DigestReadError,
+    LocalMarkdownDigestReader,
     LocalMarkdownDigestWriter,
+    digest_filename,
 )
+from researchpilot.exporters import ObsidianExportError, ObsidianExporter
 from researchpilot.integrations import (
     ArxivPDFContentProvider,
     ArxivError,
@@ -100,6 +105,12 @@ def _check_config(config_path: str | Path | None) -> int:
         f"{config.digest.max_papers} papers, "
         f"{config.digest.max_repositories} repositories"
     )
+    obsidian = config.exports.obsidian
+    print(
+        "Obsidian vault: "
+        f"{obsidian.vault_path if obsidian.vault_path is not None else 'not configured'}"
+    )
+    print(f"Obsidian folder: {obsidian.folder}")
     return 0
 
 
@@ -640,6 +651,52 @@ def _build_digest(
     return 0
 
 
+def _export_digest(
+    config_path: str | Path | None,
+    target: str,
+    digest_directory: str | Path | None,
+    vault_path: str | Path | None,
+) -> int:
+    """Export an existing generated digest to a configured destination."""
+
+    resolved_config = resolve_config_path(config_path)
+    try:
+        config = load_config(resolved_config)
+        if target != "obsidian":
+            print(f"Export error: unsupported digest target: {target}", file=sys.stderr)
+            return 2
+
+        obsidian = config.exports.obsidian
+        selected_vault = obsidian.vault_path if vault_path is None else vault_path
+        if selected_vault is None:
+            print(
+                "Export error: Obsidian vault path is not configured. Set "
+                "exports.obsidian.vault_path or pass --vault-path.",
+                file=sys.stderr,
+            )
+            return 2
+        selected_digest_directory = (
+            config.digest.output_directory
+            if digest_directory is None
+            else digest_directory
+        )
+        result = ExportDigest(
+            LocalMarkdownDigestReader(selected_digest_directory),
+            ObsidianExporter(selected_vault, folder=obsidian.folder),
+        ).execute(digest_filename(config.profile.name))
+    except ConfigurationError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    except (DigestReadError, ObsidianExportError, ValueError) as exc:
+        print(f"Export error: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Obsidian export: {result.disposition.value}")
+    print(f"Note: {result.path}")
+    print(f"Digest ID: {result.digest_id[:12]}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level ResearchPilot argument parser."""
 
@@ -877,7 +934,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     digest_parser = commands.add_parser(
         "digest",
-        help="Build local research digests.",
+        help="Build and export local research digests.",
     )
     digest_commands = digest_parser.add_subparsers(
         dest="digest_command",
@@ -912,6 +969,42 @@ def build_parser() -> argparse.ArgumentParser:
             args.config,
             args.database,
             args.output_directory,
+        )
+    )
+    digest_export = digest_commands.add_parser(
+        "export",
+        help="Export an existing generated digest.",
+    )
+    digest_export.add_argument(
+        "--target",
+        choices=("obsidian",),
+        required=True,
+        help="Export destination.",
+    )
+    digest_export.add_argument(
+        "--config",
+        type=Path,
+        help=(
+            "Path to a YAML configuration file. Overrides "
+            "RESEARCHPILOT_CONFIG and config/profile.yaml."
+        ),
+    )
+    digest_export.add_argument(
+        "--digest-directory",
+        type=Path,
+        help="Generated digest directory. Overrides digest.output_directory.",
+    )
+    digest_export.add_argument(
+        "--vault-path",
+        type=Path,
+        help="Obsidian vault directory. Overrides exports.obsidian.vault_path.",
+    )
+    digest_export.set_defaults(
+        handler=lambda args: _export_digest(
+            args.config,
+            args.target,
+            args.digest_directory,
+            args.vault_path,
         )
     )
     return parser

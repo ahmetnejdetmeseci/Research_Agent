@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from researchpilot import __version__
 from researchpilot.cli import main
+from researchpilot.digests import digest_filename
 from researchpilot.domain import (
     AbstractAnalysis,
     AnalysisContentKind,
@@ -452,6 +453,92 @@ def test_digest_build_reports_missing_analysis(capsys, tmp_path) -> None:
     assert result == 1
     assert "run the analysis commands first" in captured.err
     assert (tmp_path / "digests").exists() is False
+
+
+def test_digest_export_to_obsidian_is_idempotent(capsys, tmp_path) -> None:
+    config_path = write_test_config(tmp_path)
+    digest_directory = tmp_path / "digests"
+    digest_directory.mkdir()
+    source = digest_directory / digest_filename("Test research")
+    source.write_text("# ResearchPilot Digest\n", encoding="utf-8")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    command = [
+        "digest",
+        "export",
+        "--target",
+        "obsidian",
+        "--config",
+        str(config_path),
+        "--digest-directory",
+        str(digest_directory),
+        "--vault-path",
+        str(vault),
+    ]
+
+    first_result = main(command)
+    first_output = capsys.readouterr()
+    second_result = main(command)
+    second_output = capsys.readouterr()
+    note = vault / "ResearchPilot" / source.name
+
+    assert first_result == second_result == 0
+    assert "Obsidian export: created" in first_output.out
+    assert "Obsidian export: unchanged" in second_output.out
+    assert note.exists()
+    assert note.read_text(encoding="utf-8").endswith(
+        "# ResearchPilot Digest\n"
+    )
+
+
+def test_digest_export_refuses_unrelated_obsidian_note(capsys, tmp_path) -> None:
+    config_path = write_test_config(tmp_path)
+    digest_directory = tmp_path / "digests"
+    digest_directory.mkdir()
+    filename = digest_filename("Test research")
+    (digest_directory / filename).write_text("# Digest\n", encoding="utf-8")
+    vault = tmp_path / "vault"
+    note_directory = vault / "ResearchPilot"
+    note_directory.mkdir(parents=True)
+    note = note_directory / filename
+    note.write_text("# Keep me\n", encoding="utf-8")
+
+    result = main(
+        [
+            "digest",
+            "export",
+            "--target",
+            "obsidian",
+            "--config",
+            str(config_path),
+            "--digest-directory",
+            str(digest_directory),
+            "--vault-path",
+            str(vault),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "refusing to overwrite unrelated Obsidian note" in captured.err
+    assert note.read_text(encoding="utf-8") == "# Keep me\n"
+
+
+def test_digest_export_requires_configured_vault(capsys, tmp_path) -> None:
+    result = main(
+        [
+            "digest",
+            "export",
+            "--target",
+            "obsidian",
+            "--config",
+            str(write_test_config(tmp_path)),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "Obsidian vault path is not configured" in captured.err
 
 
 def test_analyze_papers_reports_invalid_structured_output(

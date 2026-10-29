@@ -413,6 +413,21 @@ class ResearchDigest(DomainModel):
         return value
 
 
+class ExportDisposition(StrEnum):
+    """How an exporter changed a destination artifact."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+
+
+class DigestExportReceipt(DomainModel):
+    """Provider-independent result returned by a digest exporter."""
+
+    path: NonEmptyString
+    disposition: ExportDisposition
+
+
 class RunStatus(StrEnum):
     """Lifecycle state for one ResearchPilot command run."""
 

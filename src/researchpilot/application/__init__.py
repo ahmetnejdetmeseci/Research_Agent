@@ -11,6 +11,7 @@ from researchpilot.application.analysis import (
     RepositoryAnalysisFailure,
     RepositoryAnalysisRunResult,
 )
+from researchpilot.application.exports import DigestExportResult, ExportDigest
 from researchpilot.application.ranking import (
     DeterministicPaperRanker,
     DeterministicRepositoryRanker,
@@ -38,6 +39,8 @@ __all__ = [
     "DiscoverRepositories",
     "DiscoveryRequest",
     "DiscoveryResult",
+    "DigestExportResult",
+    "ExportDigest",
     "RankPapers",
     "RankRepositories",
     "RankingPolicy",

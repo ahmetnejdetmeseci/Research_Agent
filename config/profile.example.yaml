@@ -77,3 +77,8 @@ digest:
   output_directory: digests
   max_papers: 10
   max_repositories: 10
+
+exports:
+  obsidian:
+    vault_path: null
+    folder: ResearchPilot

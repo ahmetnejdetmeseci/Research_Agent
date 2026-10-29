@@ -7,10 +7,11 @@ to a configurable interest profile.
 The project is intentionally being built in small, runnable milestones. The
 current version discovers and stores ArXiv papers and GitHub repositories,
 ranks both with an explainable interest profile, analyzes selected content
-through a local Ollama model, and builds deterministic local Markdown digests.
-Optional bounded PDF extraction and selected GitHub source-file retrieval
-enrich the existing abstract and README workflows; unavailable content falls
-back safely with persisted provenance.
+through a local Ollama model, builds deterministic local Markdown digests, and
+exports generated digests safely into an Obsidian vault. Optional bounded PDF
+extraction and selected GitHub source-file retrieval enrich the existing
+abstract and README workflows; unavailable content falls back safely with
+persisted provenance.
 
 ## Requirements
 
@@ -38,6 +39,7 @@ python -m researchpilot rank repositories --config config/profile.example.yaml
 python -m researchpilot analyze papers --config config/profile.example.yaml
 python -m researchpilot analyze repositories --config config/profile.example.yaml
 python -m researchpilot digest build --config config/profile.example.yaml
+python -m researchpilot digest export --target obsidian --config config/profile.example.yaml
 pytest
 ```
 
@@ -65,7 +67,14 @@ profile documents every setting with both paths disabled by default.
 configured Ollama model. It writes one profile-specific file under the
 configured `digest.output_directory` (or `--output-directory`), includes source
 links and content provenance, and atomically replaces the generated file on a
-rebuild. It does not contact Ollama. Obsidian export is a later milestone.
+rebuild. It does not contact Ollama.
+
+Set `exports.obsidian.vault_path` in your profile, then run `digest export
+--target obsidian`. The exporter reads the existing generated digest and writes
+it under the configured relative vault folder. It updates only notes carrying
+ResearchPilot's ownership marker and refuses to overwrite an unrelated note
+with the same filename. `--vault-path` and `--digest-directory` provide
+one-command path overrides.
 
 Read [docs/PROGRESS.md](docs/PROGRESS.md) for the exact current status and next
 milestone.

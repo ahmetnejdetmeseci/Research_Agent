@@ -38,6 +38,8 @@ def test_example_profile_is_valid() -> None:
     assert config.digest.output_directory == Path("digests")
     assert config.digest.max_papers == 10
     assert config.digest.max_repositories == 10
+    assert config.exports.obsidian.vault_path is None
+    assert config.exports.obsidian.folder == "ResearchPilot"
 
 
 def test_explicit_path_overrides_environment() -> None:
@@ -217,6 +219,52 @@ digest:
     )
 
     with pytest.raises(ConfigurationError, match="digest.max_papers"):
+        load_config(config_path)
+
+
+def test_unsafe_obsidian_folder_is_rejected(tmp_path) -> None:
+    config_path = tmp_path / "unsafe-obsidian.yaml"
+    config_path.write_text(
+        """
+profile:
+  name: Test profile
+  interests:
+    - name: Agents
+      keywords: [planning]
+sources:
+  arxiv:
+    categories: [cs.AI]
+exports:
+  obsidian:
+    folder: ../outside
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="exports.obsidian.folder"):
+        load_config(config_path)
+
+
+def test_empty_obsidian_vault_path_is_rejected(tmp_path) -> None:
+    config_path = tmp_path / "empty-vault.yaml"
+    config_path.write_text(
+        """
+profile:
+  name: Test profile
+  interests:
+    - name: Agents
+      keywords: [planning]
+sources:
+  arxiv:
+    categories: [cs.AI]
+exports:
+  obsidian:
+    vault_path: ""
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="vault path cannot be empty"):
         load_config(config_path)
 
 

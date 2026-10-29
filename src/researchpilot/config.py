@@ -138,6 +138,50 @@ class DigestConfig(ConfigurationModel):
     max_repositories: int = Field(default=10, ge=1, le=100)
 
 
+class ObsidianExportConfig(ConfigurationModel):
+    """Filesystem destination settings for Obsidian digest notes."""
+
+    vault_path: Path | None = None
+    folder: str = Field(default="ResearchPilot", min_length=1, max_length=256)
+
+    @field_validator("vault_path", mode="before")
+    @classmethod
+    def vault_path_must_not_be_empty(cls, value: object) -> object:
+        """Distinguish an omitted vault from an accidental empty path."""
+
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("vault path cannot be empty")
+        return value
+
+    @field_validator("folder")
+    @classmethod
+    def folder_must_be_safe_relative_posix_path(cls, value: str) -> str:
+        """Reject absolute, ambiguous, and parent-traversing vault folders."""
+
+        value = value.strip()
+        path = PurePosixPath(value)
+        if (
+            not value
+            or value.startswith("/")
+            or "\\" in value
+            or ":" in value
+            or "//" in value
+            or value.endswith("/")
+            or path.is_absolute()
+            or not path.parts
+            or ".." in path.parts
+            or str(path) != value
+        ):
+            raise ValueError("folder must be a normalized relative POSIX path")
+        return value
+
+
+class ExportsConfig(ConfigurationModel):
+    """Configuration for digest export destinations."""
+
+    obsidian: ObsidianExportConfig = Field(default_factory=ObsidianExportConfig)
+
+
 class PaperContentConfig(ConfigurationModel):
     """Opt-in bounds for full-paper download and extraction."""
 
@@ -220,6 +264,7 @@ class ResearchPilotConfig(ConfigurationModel):
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)
     digest: DigestConfig = Field(default_factory=DigestConfig)
+    exports: ExportsConfig = Field(default_factory=ExportsConfig)
 
 
 def resolve_config_path(
