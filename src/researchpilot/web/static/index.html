@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Local ResearchPilot dashboard">
+    <title>ResearchPilot</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="ResearchPilot dashboard">
+          <span class="brand-mark" aria-hidden="true">RP</span>
+          <span>
+            <strong>ResearchPilot</strong>
+            <small id="profile-name">Local research workspace</small>
+          </span>
+        </a>
+        <div class="actions">
+          <span class="connection"><i></i> Local</span>
+          <button id="refresh-button" class="button button-quiet" type="button">Refresh</button>
+          <button id="run-button" class="button button-primary" type="button">Run pipeline</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">Research overview</p>
+            <h1 id="page-title">What deserves your attention?</h1>
+            <p id="last-updated" class="muted">Loading the local index…</p>
+          </div>
+          <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        </section>
+
+        <section class="metrics" aria-label="Workspace metrics">
+          <article class="metric">
+            <span>Selected papers</span>
+            <strong id="paper-count">—</strong>
+            <small id="paper-total">Loading</small>
+          </article>
+          <article class="metric">
+            <span>Selected repositories</span>
+            <strong id="repository-count">—</strong>
+            <small id="repository-total">Loading</small>
+          </article>
+          <article class="metric">
+            <span>Pipeline runs</span>
+            <strong id="run-count">—</strong>
+            <small id="schema-status">Loading</small>
+          </article>
+          <article class="metric">
+            <span>Analysis attempts</span>
+            <strong id="analysis-count">—</strong>
+            <small id="model-name">Loading</small>
+          </article>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel span-two" aria-labelledby="papers-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">ArXiv</p>
+                <h2 id="papers-title">Ranked papers</h2>
+              </div>
+              <span id="arxiv-state" class="tag">—</span>
+            </div>
+            <div id="papers-list" class="item-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="runs-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Automation</p>
+                <h2 id="runs-title">Recent runs</h2>
+              </div>
+            </div>
+            <div id="runs-list" class="run-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel span-two" aria-labelledby="repositories-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">GitHub</p>
+                <h2 id="repositories-title">Ranked repositories</h2>
+              </div>
+              <span id="github-state" class="tag">—</span>
+            </div>
+            <div id="repositories-list" class="item-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="system-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Configuration</p>
+                <h2 id="system-title">Local system</h2>
+              </div>
+            </div>
+            <dl class="system-list">
+              <div><dt>API version</dt><dd id="api-version">—</dd></div>
+              <div><dt>Database</dt><dd id="database-path">—</dd></div>
+              <div><dt>Obsidian export</dt><dd id="obsidian-state">—</dd></div>
+            </dl>
+            <a class="docs-link" href="/docs">Open interactive API docs <span aria-hidden="true">↗</span></a>
+          </section>
+        </div>
+      </main>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

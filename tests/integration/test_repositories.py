@@ -221,6 +221,35 @@ def test_pipeline_repository_records_ordered_step_outcomes(database) -> None:
     assert database.status().run_step_count == 2
 
 
+def test_pipeline_repository_lists_only_pipeline_run_history(database) -> None:
+    pipeline = SQLitePipelineRepository(database)
+    first = pipeline.begin_or_resume(
+        "first-key",
+        "run",
+        (("step", False),),
+    )
+    pipeline.finish_run(first.run.id, RunStatus.SUCCEEDED)
+    SQLiteRunRepository(database).start("legacy command")
+    second = pipeline.begin_or_resume(
+        "second-key",
+        "run",
+        (("step", False),),
+    )
+    pipeline.finish_run(second.run.id, RunStatus.SUCCEEDED)
+
+    runs = pipeline.list_runs(limit=1)
+
+    assert [run.id for run in runs] == [second.run.id]
+    assert pipeline.get_run(first.run.id).run_key == "first-key"
+    assert pipeline.get_run(2) is None
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_pipeline_run_history_rejects_unsafe_limits(database, limit) -> None:
+    with pytest.raises(ValueError, match="between 1 and 100"):
+        SQLitePipelineRepository(database).list_runs(limit=limit)
+
+
 def test_pipeline_repository_resumes_running_step(database) -> None:
     repository = SQLitePipelineRepository(database)
     session = repository.begin_or_resume(

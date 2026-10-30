@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
@@ -25,10 +24,6 @@ from researchpilot.application import (
     PaperContentPolicy,
     RepositoryContentPolicy,
     RepositoryDiscoveryRequest,
-    PipelineContext,
-    PipelineStepDefinition,
-    PipelineStepExecution,
-    RunPipeline,
 )
 from researchpilot.config import (
     ConfigurationError,
@@ -59,16 +54,15 @@ from researchpilot.integrations import (
 from researchpilot.integrations.ollama import OLLAMA_PROVIDER_NAME
 from researchpilot.persistence import (
     Database,
-    LocalRunLock,
     PersistenceError,
     RunLockError,
     SQLiteAnalysisRepository,
     SQLiteRepositoryAnalysisStore,
     SQLiteRepositoryStore,
-    SQLitePipelineRepository,
     resolve_database_path,
 )
 from researchpilot.persistence.repositories import SQLitePaperRepository
+from researchpilot.runtime import ResearchPilotRuntime
 
 
 def _check_config(config_path: str | Path | None) -> int:
@@ -706,293 +700,14 @@ def _export_digest(
     return 0
 
 
-def _pipeline_key(config_path: Path, database_path: Path) -> str:
-    """Return a stable identity for one config/database pipeline pair."""
-
-    identity = (
-        f"{config_path.resolve(strict=False)}\0"
-        f"{database_path.resolve(strict=False)}"
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
 def _run_pipeline(
     config_path: str | Path | None,
     database_path: str | Path | None,
 ) -> int:
     """Run the configured discovery-to-export pipeline once or resume it."""
 
-    resolved_config = resolve_config_path(config_path)
-    resolved_database = resolve_database_path(database_path)
     try:
-        config = load_config(resolved_config)
-        database = Database(resolved_database)
-        status = database.status()
-        if not status.initialized:
-            print(
-                "Database error: database is not initialized or needs migration. "
-                f"Run 'researchpilot db init --database {resolved_database}'.",
-                file=sys.stderr,
-            )
-            return 2
-
-        papers = SQLitePaperRepository(database)
-        repositories = SQLiteRepositoryStore(database)
-        paper_analyses = SQLiteAnalysisRepository(database)
-        repository_analyses = SQLiteRepositoryAnalysisStore(database)
-        ranking = config.ranking
-        ranking_policy = RankingPolicy(
-            minimum_score=ranking.minimum_score,
-            recency_weight=ranking.recency_weight,
-            recency_window_days=ranking.recency_window_days,
-        )
-        arxiv = config.sources.arxiv
-        github = config.sources.github
-        paper_content = config.content.papers
-        repository_content = config.content.repositories
-        digest = config.digest
-        obsidian = config.exports.obsidian
-
-        with LocalRunLock(resolved_database).acquire(), httpx.Client(
-            timeout=httpx.Timeout(30.0)
-        ) as source_client, httpx.Client(
-            timeout=httpx.Timeout(config.ollama.timeout_seconds)
-        ) as llm_client:
-            provider = OllamaProvider(
-                llm_client,
-                base_url=resolve_ollama_base_url(config.ollama.base_url),
-                model=config.ollama.model,
-            )
-
-            def discover_arxiv(context: PipelineContext) -> PipelineStepExecution:
-                result = DiscoverPapers(
-                    ArxivSource(source_client),
-                    papers,
-                ).execute(
-                    DiscoveryRequest(
-                        categories=tuple(arxiv.categories),
-                        submitted_after=(
-                            context.run.started_at
-                            - timedelta(days=arxiv.lookback_days)
-                        ),
-                        submitted_before=context.run.started_at,
-                        max_results=arxiv.max_results,
-                    )
-                )
-                return PipelineStepExecution(
-                    {
-                        "fetched": result.fetched,
-                        "inserted": result.inserted,
-                        "duplicates": result.duplicates,
-                    }
-                )
-
-            def discover_github(context: PipelineContext) -> PipelineStepExecution:
-                result = DiscoverRepositories(
-                    GitHubSource(
-                        source_client,
-                        token=resolve_github_token(),
-                    ),
-                    repositories,
-                ).execute(
-                    RepositoryDiscoveryRequest(
-                        queries=tuple(github.queries),
-                        pushed_after=(
-                            context.run.started_at
-                            - timedelta(days=github.lookback_days)
-                        ),
-                        max_results=github.max_results,
-                        max_readme_characters=github.max_readme_characters,
-                    )
-                )
-                return PipelineStepExecution(
-                    {
-                        "fetched": result.fetched,
-                        "inserted": result.inserted,
-                        "duplicates": result.duplicates,
-                    }
-                )
-
-            def analyze_papers(context: PipelineContext) -> PipelineStepExecution:
-                result = AnalyzePapers(
-                    papers,
-                    paper_analyses,
-                    provider,
-                    content_provider=(
-                        ArxivPDFContentProvider(source_client)
-                        if paper_content.enabled
-                        else None
-                    ),
-                ).execute(
-                    config.profile,
-                    ranking_policy,
-                    max_papers=config.analysis.max_papers_per_run,
-                    now=context.run.started_at,
-                    content_policy=PaperContentPolicy(
-                        enabled=paper_content.enabled,
-                        max_download_bytes=paper_content.max_download_bytes,
-                        max_pages=paper_content.max_pages,
-                        max_characters=paper_content.max_characters,
-                    ),
-                )
-                if result.failed:
-                    details = "; ".join(
-                        f"{failure.paper_external_id}: {failure.error}"
-                        for failure in result.failures
-                    )
-                    raise RuntimeError(details or "paper analysis failed")
-                return PipelineStepExecution(
-                    {
-                        "selected": result.selected,
-                        "attempted": result.attempted,
-                        "succeeded": result.succeeded,
-                        "already_complete": result.already_complete,
-                        "full_content_used": result.full_content_used,
-                        "fallbacks": len(result.fallbacks),
-                    }
-                )
-
-            def analyze_repositories(
-                context: PipelineContext,
-            ) -> PipelineStepExecution:
-                result = AnalyzeRepositories(
-                    repositories,
-                    repository_analyses,
-                    provider,
-                    content_provider=(
-                        GitHubContentSource(
-                            source_client,
-                            token=resolve_github_token(),
-                        )
-                        if repository_content.enabled
-                        else None
-                    ),
-                ).execute(
-                    config.profile,
-                    ranking_policy,
-                    max_repositories=(
-                        config.analysis.max_repositories_per_run
-                    ),
-                    now=context.run.started_at,
-                    content_policy=RepositoryContentPolicy(
-                        enabled=repository_content.enabled,
-                        include_patterns=tuple(
-                            repository_content.include_patterns
-                        ),
-                        exclude_patterns=tuple(
-                            repository_content.exclude_patterns
-                        ),
-                        max_files=repository_content.max_files,
-                        max_file_bytes=repository_content.max_file_bytes,
-                        max_total_characters=(
-                            repository_content.max_total_characters
-                        ),
-                    ),
-                )
-                if result.failed:
-                    details = "; ".join(
-                        f"{failure.repository_external_id}: {failure.error}"
-                        for failure in result.failures
-                    )
-                    raise RuntimeError(details or "repository analysis failed")
-                return PipelineStepExecution(
-                    {
-                        "selected": result.selected,
-                        "attempted": result.attempted,
-                        "succeeded": result.succeeded,
-                        "already_complete": result.already_complete,
-                        "missing_readme": result.missing_readme,
-                        "source_content_used": result.source_content_used,
-                        "content_unavailable": result.content_unavailable,
-                        "fallbacks": len(result.fallbacks),
-                    }
-                )
-
-            def build_digest(_context: PipelineContext) -> PipelineStepExecution:
-                try:
-                    result = BuildDigest(
-                        papers,
-                        paper_analyses,
-                        repositories,
-                        repository_analyses,
-                        LocalMarkdownDigestWriter(digest.output_directory),
-                    ).execute(
-                        config.profile,
-                        ranking_policy,
-                        provider=OLLAMA_PROVIDER_NAME,
-                        model=config.ollama.model,
-                        max_papers=digest.max_papers,
-                        max_repositories=digest.max_repositories,
-                    )
-                except DigestBuildError as exc:
-                    return PipelineStepExecution.skip(str(exc), built=False)
-                return PipelineStepExecution(
-                    {
-                        "built": True,
-                        "path": result.path,
-                        "digest_id": result.digest_id,
-                        "papers": result.paper_count,
-                        "repositories": result.repository_count,
-                        "missing_analysis": result.missing_analysis,
-                        "omitted_by_limit": result.omitted_by_limit,
-                    }
-                )
-
-            def export_obsidian(
-                context: PipelineContext,
-            ) -> PipelineStepExecution:
-                digest_step = context.steps["build_digest"]
-                if digest_step.status.value == "skipped":
-                    return PipelineStepExecution.skip(
-                        "digest was not built in this pipeline run"
-                    )
-                result = ExportDigest(
-                    LocalMarkdownDigestReader(digest.output_directory),
-                    ObsidianExporter(
-                        obsidian.vault_path,
-                        folder=obsidian.folder,
-                    ),
-                ).execute(digest_filename(config.profile.name))
-                return PipelineStepExecution(
-                    {
-                        "path": result.path,
-                        "digest_id": result.digest_id,
-                        "disposition": result.disposition.value,
-                    }
-                )
-
-            steps = (
-                PipelineStepDefinition(
-                    "discover_arxiv",
-                    arxiv.enabled,
-                    discover_arxiv,
-                ),
-                PipelineStepDefinition(
-                    "discover_github",
-                    github.enabled,
-                    discover_github,
-                ),
-                PipelineStepDefinition(
-                    "analyze_papers",
-                    True,
-                    analyze_papers,
-                ),
-                PipelineStepDefinition(
-                    "analyze_repositories",
-                    True,
-                    analyze_repositories,
-                ),
-                PipelineStepDefinition("build_digest", True, build_digest),
-                PipelineStepDefinition(
-                    "export_obsidian",
-                    obsidian.vault_path is not None,
-                    export_obsidian,
-                ),
-            )
-            result = RunPipeline(SQLitePipelineRepository(database)).execute(
-                _pipeline_key(resolved_config, resolved_database),
-                steps,
-            )
+        result = ResearchPilotRuntime.load(config_path, database_path).run_pipeline()
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
@@ -1012,6 +727,26 @@ def _run_pipeline(
             print(f"  Error: {step.error}", file=sys.stderr)
     print(f"Pipeline status: {result.run.status.value}")
     return 0 if result.succeeded else 1
+
+
+def _serve(
+    config_path: str | Path | None,
+    database_path: str | Path | None,
+    host: str,
+    port: int,
+) -> int:
+    """Serve the local API and dashboard."""
+
+    import uvicorn
+
+    from researchpilot.web import create_app
+
+    uvicorn.run(
+        create_app(config_path=config_path, database_path=database_path),
+        host=host,
+        port=port,
+    )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1346,6 +1081,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.set_defaults(
         handler=lambda args: _run_pipeline(args.config, args.database)
+    )
+
+    serve_parser = commands.add_parser(
+        "serve",
+        help="Serve the local API and dashboard.",
+    )
+    serve_parser.add_argument(
+        "--config",
+        type=Path,
+        help=(
+            "Path to a YAML configuration file. Overrides "
+            "RESEARCHPILOT_CONFIG and config/profile.yaml."
+        ),
+    )
+    serve_parser.add_argument(
+        "--database",
+        type=Path,
+        help=(
+            "SQLite path. Overrides RESEARCHPILOT_DATABASE and researchpilot.db."
+        ),
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1).",
+    )
+    serve_parser.add_argument(
+        "--port",
+        default=8000,
+        type=int,
+        choices=range(1, 65536),
+        metavar="PORT",
+        help="TCP port from 1 to 65535 (default: 8000).",
+    )
+    serve_parser.set_defaults(
+        handler=lambda args: _serve(
+            args.config,
+            args.database,
+            args.host,
+            args.port,
+        )
     )
     return parser
 

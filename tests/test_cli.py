@@ -628,9 +628,9 @@ def test_run_pipeline_is_idempotent_and_records_every_step(
                 "limitations": []
             }"""
 
-    monkeypatch.setattr("researchpilot.cli.ArxivSource", FakeArxivSource)
-    monkeypatch.setattr("researchpilot.cli.GitHubSource", FakeGitHubSource)
-    monkeypatch.setattr("researchpilot.cli.OllamaProvider", FakeOllamaProvider)
+    monkeypatch.setattr("researchpilot.runtime.ArxivSource", FakeArxivSource)
+    monkeypatch.setattr("researchpilot.runtime.GitHubSource", FakeGitHubSource)
+    monkeypatch.setattr("researchpilot.runtime.OllamaProvider", FakeOllamaProvider)
     command = [
         "run",
         "--config",
@@ -674,6 +674,32 @@ def test_run_pipeline_requires_current_database(capsys, tmp_path) -> None:
     assert result == 2
     assert "database is not initialized or needs migration" in captured.err
     assert database_path.exists() is False
+
+
+def test_serve_starts_local_web_app(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_run(app, *, host, port) -> None:
+        captured.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    result = main(
+        [
+            "serve",
+            "--config",
+            str(tmp_path / "profile.yaml"),
+            "--database",
+            str(tmp_path / "researchpilot.db"),
+            "--port",
+            "8765",
+        ]
+    )
+
+    assert result == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8765
+    assert captured["app"].title == "ResearchPilot API"
 
 
 def test_analyze_papers_reports_invalid_structured_output(

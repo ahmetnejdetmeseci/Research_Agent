@@ -9,7 +9,7 @@ current version discovers and stores ArXiv papers and GitHub repositories,
 ranks both with an explainable interest profile, analyzes selected content
 through a local Ollama model, builds deterministic local Markdown digests,
 exports generated digests safely into an Obsidian vault, and runs the configured
-pipeline idempotently from one command. Optional bounded PDF extraction and
+pipeline idempotently from the CLI or a local web dashboard. Optional bounded PDF extraction and
 selected GitHub source-file retrieval enrich the existing abstract and README
 workflows; unavailable content falls back safely with persisted provenance.
 
@@ -41,6 +41,7 @@ python -m researchpilot analyze repositories --config config/profile.example.yam
 python -m researchpilot digest build --config config/profile.example.yaml
 python -m researchpilot digest export --target obsidian --config config/profile.example.yaml
 python -m researchpilot run --config config/profile.example.yaml
+python -m researchpilot serve --config config/profile.example.yaml
 pytest
 ```
 
@@ -82,6 +83,12 @@ configured Obsidian export. Each step and its outcome are persisted. A hard
 interruption can resume without repeating completed steps, and an advisory lock
 prevents overlapping runs for the same database. See
 [docs/SCHEDULING.md](docs/SCHEDULING.md) for cron and launchd examples.
+
+`serve` starts the FastAPI application on `http://127.0.0.1:8000` by default.
+The dashboard displays live database counts, ranked papers and repositories,
+and persisted pipeline history. Its run button calls the same shared pipeline
+runtime as the CLI. Interactive API documentation is available at `/docs`; see
+[docs/API.md](docs/API.md) for the endpoint contract and local-use boundary.
 
 Read [docs/PROGRESS.md](docs/PROGRESS.md) for the exact current status and next
 milestone.

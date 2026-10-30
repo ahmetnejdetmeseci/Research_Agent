@@ -261,6 +261,12 @@ class PipelineRepository(Protocol):
     def list_steps(self, run_id: int) -> list[PipelineStepRecord]:
         """Return ordered step state for a run."""
 
+    def list_runs(self, *, limit: int = 20) -> list[RunRecord]:
+        """Return recent pipeline runs newest first."""
+
+    def get_run(self, run_id: int) -> RunRecord | None:
+        """Find one pipeline run by ID."""
+
 
 class AnalysisRepository(Protocol):
     """Persist auditable paper-analysis attempts."""

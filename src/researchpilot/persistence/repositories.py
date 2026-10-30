@@ -831,6 +831,39 @@ class SQLitePipelineRepository:
             raise PersistenceError(f"could not list pipeline steps: {exc}") from exc
         return [_pipeline_step_from_row(row) for row in rows]
 
+    def list_runs(self, *, limit: int = 20) -> list[RunRecord]:
+        """Return recent pipeline runs newest first."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("pipeline run limit must be between 1 and 100")
+        try:
+            with self._database.transaction() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM runs
+                    WHERE run_key IS NOT NULL
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not list pipeline runs: {exc}") from exc
+        return [_run_from_row(row) for row in rows]
+
+    def get_run(self, run_id: int) -> RunRecord | None:
+        """Find one pipeline run by ID without exposing legacy command runs."""
+
+        try:
+            with self._database.transaction() as connection:
+                row = connection.execute(
+                    "SELECT * FROM runs WHERE id = ? AND run_key IS NOT NULL",
+                    (run_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not read pipeline run: {exc}") from exc
+        return None if row is None else _run_from_row(row)
+
 
 class SQLiteAnalysisRepository:
     """Persist immutable history for abstract-analysis attempts."""

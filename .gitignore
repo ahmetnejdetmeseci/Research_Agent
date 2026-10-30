@@ -9,7 +9,7 @@ dist/
 *.egg-info/
 .DS_Store
 .env
-researchpilot.db
+*.db
 *.db.run.lock
 config/profile.yaml
 /digests/

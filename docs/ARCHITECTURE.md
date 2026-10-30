@@ -5,7 +5,7 @@
 ResearchPilot uses a small layered architecture. Dependencies point inward:
 
 ```text
-CLI / future HTTP API
+CLI / local HTTP API / dashboard
           |
           v
 application services ---> domain models and ports
@@ -15,9 +15,11 @@ external integrations      persistence/export adapters
 ```
 
 The domain and application layers must not import ArXiv, GitHub, Ollama,
-FastAPI, or SQLite-specific types. The CLI is the initial composition root: it
-loads configuration, constructs concrete adapters, invokes an application use
-case, and translates errors into terminal output and exit codes.
+FastAPI, or SQLite-specific types. `ResearchPilotRuntime` is the shared
+composition root: it loads configuration, constructs concrete adapters, and
+invokes application use cases. The CLI and FastAPI interface translate those
+outcomes into terminal or HTTP representations without duplicating workflow
+rules.
 
 Only modules required by the active milestone should be added. The target
 package shape will grow toward:
@@ -26,12 +28,14 @@ package shape will grow toward:
 src/researchpilot/
 ├── cli.py
 ├── config.py
+├── runtime.py       # Shared CLI/API composition of concrete adapters
 ├── domain/          # Provider-independent models and ports
 ├── application/     # Use-case orchestration
 ├── integrations/    # ArXiv, GitHub, and Ollama HTTP adapters
 ├── persistence/     # SQLite connection, migrations, repositories
 ├── digests/         # Digest construction
 ├── exporters/       # Obsidian and later delivery adapters
+├── web/             # Thin FastAPI routes and static dashboard
 └── agent/           # Future bounded agent loop and typed tools
 ```
 
@@ -208,8 +212,8 @@ force-overwrite option in this milestone.
 ### Periodic end-to-end runs
 
 `RunPipeline` is a provider-independent coordinator over ordered typed step
-definitions and a `PipelineRepository` port. The CLI composes the existing
-discovery, analysis, digest, and export use cases into six explicit steps:
+definitions and a `PipelineRepository` port. The shared runtime composes the
+existing discovery, analysis, digest, and export use cases into six explicit steps:
 ArXiv discovery, GitHub discovery, paper analysis, repository analysis, digest
 building, and Obsidian export. Source steps follow their enabled settings;
 Obsidian export is enabled only when a vault is configured. Digest and export
@@ -272,11 +276,28 @@ The database path uses the following precedence: the CLI `--database` option,
 `RESEARCHPILOT_DATABASE`, then `researchpilot.db`. Database commands do not
 require the research-profile configuration.
 
-### Interfaces
+### API and dashboard
 
-Before the web milestone, `argparse` commands are the supported interface.
-FastAPI routes will later call the same application services and will not own
-business logic.
+FastAPI routes are interface adapters over `ResearchPilotRuntime`. They expose
+versioned JSON endpoints for health, safe configuration/database status,
+timestamped paper and repository rankings, recent pipeline history, individual
+run detail, and pipeline triggering. Route handlers validate query parameters,
+invoke one runtime operation, and serialize its domain outcome; discovery,
+ranking, analysis, digest, and export rules remain in application services.
+
+Application startup uses FastAPI's lifespan hook to load and validate the
+selected configuration and current SQLite database once. Synchronous route
+handlers keep blocking SQLite and `httpx.Client` workflows out of the event
+loop. Persistence failures produce a service-unavailable response and an
+overlapping pipeline lock produces a conflict response. A pipeline step failure
+remains a recorded domain outcome returned by the trigger endpoint rather than
+being hidden as a transport failure.
+
+The dashboard is a static, dependency-free HTML/CSS/JavaScript client served by
+the same application. It reads only `/api/v1` endpoints, renders text through
+DOM text nodes, and does not access SQLite or configuration directly. The server
+binds to `127.0.0.1` by default. This milestone adds no authentication,
+multi-user state, CORS policy for remote clients, or hosted deployment.
 
 ## Configuration and secrets
 
@@ -333,6 +354,8 @@ GitHub adapter -> DiscoverRepositories -> SoftwareRepository -> SQLite
        -> immutable attempt history -> digest builder -> local Markdown
        -> ExportDigest -> Obsidian filesystem adapter
 OS scheduler -> RunPipeline -> persisted run/step outcomes
+CLI / API -> ResearchPilotRuntime -> shared application services
+dashboard -> /api/v1 -> ranked items and pipeline history
 ```
 
 Each step records enough status to be safely retried. Exported Markdown is

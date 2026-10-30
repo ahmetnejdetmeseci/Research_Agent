@@ -543,6 +543,24 @@ class PipelineStepRecord(DomainModel):
         return self
 
 
+class PipelineRunHistory(DomainModel):
+    """One pipeline run and its ordered persisted step state."""
+
+    run: RunRecord
+    steps: list[PipelineStepRecord]
+
+    @model_validator(mode="after")
+    def steps_must_belong_to_run(self) -> Self:
+        """Keep history aggregates internally consistent."""
+
+        if any(step.run_id != self.run.id for step in self.steps):
+            raise ValueError("pipeline steps must belong to the history run")
+        positions = [step.position for step in self.steps]
+        if positions != sorted(positions):
+            raise ValueError("pipeline steps must be ordered by position")
+        return self
+
+
 class PipelineSession(DomainModel):
     """A newly started or resumable pipeline run and its ordered steps."""
 

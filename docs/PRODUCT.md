@@ -50,8 +50,8 @@ When the planned core workflow is complete, ResearchPilot will:
 
 ## Current product state
 
-The foundation through periodic end-to-end runs is in place. ResearchPilot can
-validate a YAML interest profile; discover recent ArXiv papers and GitHub
+The foundation through the local API and dashboard is in place. ResearchPilot
+can validate a YAML interest profile; discover recent ArXiv papers and GitHub
 repositories; normalize and persist both item types without duplicates; rank
 them with explainable deterministic rules; and analyze selected abstracts,
 bounded PDF text, READMEs, or explicitly selected source files through a local
@@ -70,16 +70,24 @@ vault folders, and symbolic-link checks. It updates only notes it previously
 created; a colliding ordinary note is never silently overwritten. Other export
 targets are not implemented yet.
 
-One `run` command performs the configured discovery, analysis, digest, and
-optional Obsidian-export pipeline. Step outcomes are persisted locally,
-overlapping invocations for the same database are rejected, and a run left
-incomplete by a hard interruption resumes without repeating completed steps.
-Scheduling is delegated to cron or launchd rather than an in-process daemon.
+One `run` command or the local dashboard performs the configured discovery,
+analysis, digest, and optional Obsidian-export pipeline. Step outcomes are
+persisted locally, overlapping invocations for the same database are rejected,
+and a run left incomplete by a hard interruption resumes without repeating
+completed steps. Scheduling is delegated to cron or launchd rather than an
+in-process daemon.
+
+A local FastAPI application now exposes health and configuration status, live
+paper and repository rankings, persisted pipeline history, individual run
+detail, and pipeline triggering. A dependency-free HTML/CSS/JavaScript
+dashboard consumes only those JSON endpoints. The CLI and HTTP interface share
+one runtime composition layer, so they execute the same application services
+and produce the same domain outcomes. The server binds to localhost by default;
+authentication, multi-user access, and remote deployment remain out of scope.
 
 ## Non-goals for the initial milestones
 
 - Multi-user accounts, cloud hosting, or distributed execution.
-- A web API or dashboard before CLI workflows stabilize.
 - An autonomous agent before deterministic workflows are proven.
 - LangChain or another agent framework.
 - Supporting every research source, LLM provider, or export destination.

@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 11 — Periodic end-to-end runs. Complete and verified offline.
+Milestone 12 — API and dashboard. Complete and verified offline.
 
 ## Completed features
 
@@ -175,12 +175,36 @@ Milestone 11 — Periodic end-to-end runs. Complete and verified offline.
 - `docs/SCHEDULING.md` with absolute-path cron and launchd examples, environment
   and secret guidance, exit-code behavior, manual verification, logging, and
   resume semantics. No in-process scheduler was introduced.
-- Project version `0.11.0`.
+- Shared `ResearchPilotRuntime` composition root used by both CLI pipeline
+  execution and the HTTP interface, preventing CLI/API workflow drift.
+- FastAPI application with lifespan-based configuration/database validation and
+  versioned `/api/v1` endpoints for health, safe system status, timestamped
+  paper rankings, timestamped repository rankings, recent pipeline history,
+  individual run detail, and pipeline triggering.
+- API ranking endpoints call the existing `RankPapers` and `RankRepositories`
+  application services. `POST /api/v1/runs` calls the exact shared pipeline
+  method used by `researchpilot run`.
+- Pipeline-history reads return only end-to-end pipeline runs, newest first,
+  with a validated limit and ordered persisted step metrics, errors, and
+  timestamps; legacy command-history rows remain private to their repository.
+- Persistence failures map to HTTP `503`, overlapping pipeline locks map to
+  `409`, missing run IDs map to `404`, and invalid query values map to `422`.
+- Dependency-free local dashboard showing configuration health, counts, ranked
+  papers and repositories, recent pipeline outcomes, and a run trigger. It
+  consumes only the public JSON API and renders source text with DOM text nodes.
+- `serve` command with `127.0.0.1:8000` defaults plus explicit configuration,
+  database, host, and validated port options. Interactive OpenAPI documentation
+  is available at `/docs`.
+- `docs/API.md` documents startup, endpoint contracts, error behavior, and the
+  unauthenticated localhost-only security boundary.
+- FastAPI and Uvicorn runtime dependencies; static dashboard assets are included
+  in built packages.
+- Project version `0.12.0`.
 
-FastAPI, dashboard, additional delivery channels, and agent-loop functionality
-are not implemented. Extracted full content is intentionally ephemeral;
-ranking results remain computed on demand, and Markdown digests and Obsidian
-notes are derived local output.
+Authentication, multi-user or hosted deployment, additional delivery channels,
+and agent-loop functionality are not implemented. Extracted full content is
+intentionally ephemeral; ranking results remain computed on demand, and
+Markdown digests and Obsidian notes are derived local output.
 
 ## Current runnable commands
 
@@ -211,6 +235,8 @@ python -m researchpilot digest build --config /path/to/profile.yaml --database /
 python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml
 python -m researchpilot digest export --target obsidian --config /path/to/profile.yaml --digest-directory /path/to/digests --vault-path /path/to/obsidian-vault
 python -m researchpilot run --config /path/to/profile.yaml --database /path/to/researchpilot.db
+python -m researchpilot serve --config /path/to/profile.yaml --database /path/to/researchpilot.db
+python -m researchpilot serve --config /path/to/profile.yaml --database /path/to/researchpilot.db --host 127.0.0.1 --port 8000
 pytest
 ```
 
@@ -233,13 +259,18 @@ the normal source enablement settings and exports to Obsidian only when a vault
 is configured. See `docs/SCHEDULING.md` before installing a cron or launchd
 entry.
 
+The local dashboard is available at `http://127.0.0.1:8000/` after `serve`
+starts. Interactive API documentation is at `http://127.0.0.1:8000/docs`.
+The selected database must already be initialized and current. Keep the default
+localhost binding because this milestone intentionally adds no authentication.
+
 ## Tests and status
 
 - Verified on 2026-10-29 in the project virtual environment.
 - Host interpreter: Python 3.14.6.
-- Pytest: 162 tests passed.
+- Pytest: 174 tests passed.
 - `python -m researchpilot --help`: passed.
-- `researchpilot --version`: passed and reported version `0.11.0`.
+- `researchpilot --version`: passed and reported version `0.12.0`.
 - Example and environment-selected configuration checks: passed.
 - Missing configuration returns exit code 2 with an actionable error: passed.
 - Fresh database status returns exit code 1 without creating a file: passed.
@@ -316,11 +347,29 @@ entry.
   deterministic digest, and records all step outcomes: passed.
 - Per-database process lock rejects overlapping invocations and becomes
   acquirable after release: passed with a temporary lock file.
-- Python bytecode compilation, dependency consistency, CLI help, configuration
+- Shared runtime rejects missing/outdated databases and produces the same
+  deterministic ranking outcomes as the existing application services: passed.
+- Pipeline history newest-first ordering, limits, detail lookup, and exclusion
+  of legacy non-pipeline command rows: passed with temporary SQLite databases.
+- Dashboard HTML, CSS, and JavaScript asset delivery: passed through an in-process
+  ASGI client. A screenshot-based visual pass was unavailable because no
+  browser connection was exposed in this session.
+- Health, safe status, aware-time ranking, validation errors, run listing,
+  individual run lookup, pipeline triggering, and overlapping-run conflict
+  responses: passed through the local API with no live external services.
+- API paper ranking was compared with the shared runtime result at the same
+  timestamp, and the trigger route was verified to call the shared pipeline use
+  case exactly once: passed.
+- A live Uvicorn process started successfully on `127.0.0.1:8765` with a
+  temporary initialized database and shut down cleanly after verification.
+- Editable installation with FastAPI and Uvicorn, dependency consistency,
+  Python bytecode compilation, CLI help, `serve` parser wiring, configuration
   validation, and version output: passed.
+- Isolated wheel build for version `0.12.0`: passed; the archive contains all
+  HTML, CSS, and JavaScript dashboard assets plus the existing SQL migrations.
 
 ## Next milestone
 
-Milestone 12 — API and dashboard. Expose stable application services through
-FastAPI and build the dashboard on those endpoints without moving business
-logic into route handlers.
+Milestone 13 — Additional delivery channels. Add Telegram and Notion adapters
+behind delivery or export interfaces while keeping credentials and delivery
+failures isolated from digest creation.
